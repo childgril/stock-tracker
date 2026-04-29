@@ -10,30 +10,37 @@
 </head>
 <body>
 
-<header class="topbar">
+<div class="layout">
+
+<aside class="sidebar">
   <div class="brand">📊 股票損益追蹤</div>
-  <div class="account-switcher">
-    <label>帳戶：</label>
+
+  <div class="sidebar-section">
+    <div class="section-label">帳戶</div>
     <select id="accountSelect"></select>
-    <button class="btn-mini" id="btnNewAccount">＋ 新增</button>
-    <button class="btn-mini" id="btnRenameAccount">重新命名</button>
-    <button class="btn-mini danger" id="btnDeleteAccount">刪除</button>
+    <div class="account-actions">
+      <button class="btn-mini" id="btnNewAccount">＋ 新增</button>
+      <button class="btn-mini" id="btnRenameAccount">重新命名</button>
+      <button class="btn-mini danger" id="btnDeleteAccount">刪除</button>
+    </div>
   </div>
-  <div class="toolbar">
-    <button class="btn-mini" id="btnBackup">📥 匯出備份</button>
-    <button class="btn-mini" id="btnRestore">📤 匯入還原</button>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="overview">📈 總覽（跨帳戶）</button>
+    <button class="tab" data-tab="account">🏦 帳戶明細</button>
+    <button class="tab" data-tab="realized">💰 已實現損益</button>
+    <button class="tab" data-tab="unrealized">📦 未實現損益</button>
+    <button class="tab" data-tab="trades">📋 投資明細</button>
+    <button class="tab" data-tab="import">⬆️ 匯入資料</button>
+  </nav>
+
+  <div class="sidebar-section sidebar-bottom">
+    <div class="section-label">資料管理</div>
+    <button class="btn-mini wide" id="btnBackup">📥 匯出備份</button>
+    <button class="btn-mini wide" id="btnRestore">📤 匯入還原</button>
     <input type="file" id="restoreFile" accept=".json" hidden>
   </div>
-</header>
-
-<nav class="tabs">
-  <button class="tab active" data-tab="overview">📈 總覽（跨帳戶）</button>
-  <button class="tab" data-tab="account">🏦 帳戶明細</button>
-  <button class="tab" data-tab="realized">💰 已實現損益</button>
-  <button class="tab" data-tab="unrealized">📦 未實現損益</button>
-  <button class="tab" data-tab="trades">📋 投資明細</button>
-  <button class="tab" data-tab="import">⬆️ 匯入資料</button>
-</nav>
+</aside>
 
 <main>
 
@@ -226,6 +233,8 @@
 </section>
 
 </main>
+
+</div><!-- /.layout -->
 
 <div id="toast"></div>
 <div id="modalRoot"></div>

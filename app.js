@@ -510,7 +510,7 @@ function drawAccountCharts(perAccount) {
   if (State.charts.pl) State.charts.pl.destroy();
   if (!perAccount.length || perAccount.every(a => a.totalMarket === 0)) return;
 
-  const colors = ['#4a9eff','#3ddc84','#ffb547','#ff5f5f','#b46aff','#5fd0d0','#ff8b3d'];
+  const colors = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#0891b2','#db2777'];
   const ctx1 = document.getElementById('chartAccountMarket').getContext('2d');
   State.charts.market = new Chart(ctx1, {
     type: 'doughnut',
@@ -519,15 +519,15 @@ function drawAccountCharts(perAccount) {
       datasets: [{
         data: perAccount.map(a => a.totalMarket),
         backgroundColor: colors,
-        borderColor: '#1a2028',
+        borderColor: '#ffffff',
         borderWidth: 2
       }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
-        legend: { labels: { color: '#e6edf3' } },
-        title: { display: true, text: '各帳戶市值分布', color: '#e6edf3' }
+        legend: { labels: { color: '#1f2937' } },
+        title: { display: true, text: '各帳戶市值分布', color: '#1f2937' }
       }
     }
   });
@@ -539,19 +539,19 @@ function drawAccountCharts(perAccount) {
     data: {
       labels: perAccount.map(a => a.name),
       datasets: [
-        { label: '未實現', data: perAccount.map(a => a.unrealizedPL), backgroundColor: '#4a9eff' },
-        { label: '已實現', data: perAccount.map(a => a.realizedPL), backgroundColor: '#3ddc84' }
+        { label: '未實現', data: perAccount.map(a => a.unrealizedPL), backgroundColor: '#2563eb' },
+        { label: '已實現', data: perAccount.map(a => a.realizedPL), backgroundColor: '#059669' }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
-        legend: { labels: { color: '#e6edf3' } },
-        title: { display: true, text: '各帳戶損益對比', color: '#e6edf3' }
+        legend: { labels: { color: '#1f2937' } },
+        title: { display: true, text: '各帳戶損益對比', color: '#1f2937' }
       },
       scales: {
-        x: { ticks: { color: '#8b95a5' }, grid: { color: '#303a48' } },
-        y: { ticks: { color: '#8b95a5' }, grid: { color: '#303a48' } }
+        x: { ticks: { color: '#6b7280' }, grid: { color: '#e8edf3' } },
+        y: { ticks: { color: '#6b7280' }, grid: { color: '#e8edf3' } }
       }
     }
   });
@@ -578,17 +578,17 @@ function drawTrendChart() {
     data: {
       labels: dates,
       datasets: [
-        { label: '市值', data: dates.map(d => dateMap.get(d).market), borderColor: '#4a9eff', backgroundColor: 'rgba(74,158,255,0.1)', fill: true, tension: 0.3 },
-        { label: '成本', data: dates.map(d => dateMap.get(d).cost), borderColor: '#8b95a5', borderDash: [5,5], fill: false, tension: 0.3 },
-        { label: '未實現損益', data: dates.map(d => dateMap.get(d).pl), borderColor: '#3ddc84', fill: false, tension: 0.3 }
+        { label: '市值', data: dates.map(d => dateMap.get(d).market), borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.1)', fill: true, tension: 0.3 },
+        { label: '成本', data: dates.map(d => dateMap.get(d).cost), borderColor: '#9ca3af', borderDash: [5,5], fill: false, tension: 0.3 },
+        { label: '未實現損益', data: dates.map(d => dateMap.get(d).pl), borderColor: '#059669', fill: false, tension: 0.3 }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#e6edf3' } } },
+      plugins: { legend: { labels: { color: '#1f2937' } } },
       scales: {
-        x: { ticks: { color: '#8b95a5' }, grid: { color: '#303a48' } },
-        y: { ticks: { color: '#8b95a5' }, grid: { color: '#303a48' } }
+        x: { ticks: { color: '#6b7280' }, grid: { color: '#e8edf3' } },
+        y: { ticks: { color: '#6b7280' }, grid: { color: '#e8edf3' } }
       }
     }
   });
