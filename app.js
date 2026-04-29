@@ -23,7 +23,8 @@ function emptyAccount(name, broker = '元大') {
     snapshots: [],           // [{date, items, totalMarket, totalCost, totalPL}]
     trades: [],              // 投資明細
     realized: [],            // 已實現（含 interest, shortFee, adjust, note, actualPL）
-    adjustments: {}          // {realizedKey: {adjust, note}} 即使重新匯入也保留
+    adjustments: {},         // {realizedKey: {adjust, note}} 即使重新匯入也保留
+    loans: []                // 借款紀錄 [{id, purpose, principal, rate, startDate, dueDate, status, interestPayments:[], repayments:[]}]
   };
 }
 
@@ -39,7 +40,16 @@ function emptyData() {
 function load() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const data = JSON.parse(raw);
+      // 資料遷移：舊版本帳戶補上 loans 欄位
+      if (data.accounts) {
+        for (const acc of data.accounts) {
+          if (!Array.isArray(acc.loans)) acc.loans = [];
+        }
+      }
+      return data;
+    }
   } catch (e) { console.warn('localStorage parse error', e); }
   return emptyData();
 }
@@ -448,6 +458,7 @@ function renderAll() {
   renderRealized();
   renderUnrealized();
   renderTrades();
+  renderLoans();
 }
 
 // ---------- 帳戶聚合 ----------
@@ -457,8 +468,28 @@ function aggregateAccount(acc) {
   const unrealizedPL= acc.unrealized.reduce((s,x) => s+x.pl, 0);
   const totalInterest = acc.realized.reduce((s,r) => s+(r.interest||0), 0);
   const totalShortFee = acc.realized.reduce((s,r) => s+(r.shortFee||0), 0);
-  const realizedPL = acc.realized.reduce((s,r) => s + (r.pl + (r.adjust||0)), 0);
-  return { totalMarket, totalCost, unrealizedPL, totalInterest, totalShortFee, realizedPL };
+  const realizedPLRaw = acc.realized.reduce((s,r) => s + (r.pl + (r.adjust||0)), 0);
+
+  // 借款利息累計
+  const loans = acc.loans || [];
+  const loanInterestPaid = loans.reduce((s, l) =>
+    s + (l.interestPayments || []).reduce((ss, p) => ss + (p.amount || 0), 0), 0);
+  const loanPrincipal = loans.reduce((s, l) => s + (l.principal || 0), 0);
+  const loanRepaid = loans.reduce((s, l) =>
+    s + (l.repayments || []).reduce((ss, p) => ss + (p.amount || 0), 0), 0);
+  const loanRemaining = loanPrincipal - loanRepaid;
+
+  // 已實現損益要扣借款利息（你要求的：借款利息計入實際損益）
+  const realizedPL = realizedPLRaw - loanInterestPaid;
+
+  return {
+    totalMarket, totalCost, unrealizedPL,
+    totalInterest, totalShortFee,
+    realizedPL,        // 已扣借款利息
+    realizedPLRaw,     // 未扣借款利息（純股票交易實現損益）
+    loanInterestPaid,
+    loanPrincipal, loanRepaid, loanRemaining
+  };
 }
 
 function setVal(id, val, withClass = false) {
@@ -470,12 +501,13 @@ function setVal(id, val, withClass = false) {
 
 // ---------- 總覽 ----------
 function renderOverview() {
-  let M=0, C=0, U=0, R=0, I=0, S=0;
+  let M=0, C=0, U=0, R=0, I=0, S=0, LI=0, LB=0;
   const perAccount = [];
   for (const a of State.data.accounts) {
     const g = aggregateAccount(a);
     M += g.totalMarket; C += g.totalCost; U += g.unrealizedPL;
     R += g.realizedPL; I += g.totalInterest; S += g.totalShortFee;
+    LI += g.loanInterestPaid; LB += g.loanRemaining;
     perAccount.push({ name: `${a.broker}-${a.name}`, ...g });
   }
   setVal('ovTotalMarket', M);
@@ -599,9 +631,11 @@ function renderAccount() {
   const acc = getCurrentAccount();
   const status = document.getElementById('acDataStatus');
   if (!acc) {
-    setVal('acMarket','—'); setVal('acCost','—'); setVal('acUnrealizedPL','—');
-    setVal('acRealizedPL','—'); setVal('acInterest','—'); setVal('acShortFee','—');
+    ['acMarket','acCost','acUnrealizedPL','acRealizedPL','acInterest','acShortFee','acLoanInterest','acLoanBalance']
+      .forEach(id => setVal(id, '—'));
     status.innerHTML = '<div class="empty-state">尚未選擇帳戶</div>';
+    document.querySelector('#monthlyTable tbody').innerHTML =
+      '<tr><td colspan="10" class="empty-state">尚未選擇帳戶</td></tr>';
     return;
   }
   const g = aggregateAccount(acc);
@@ -611,13 +645,234 @@ function renderAccount() {
   setVal('acRealizedPL', g.realizedPL, true);
   setVal('acInterest', g.totalInterest);
   setVal('acShortFee', g.totalShortFee);
+  setVal('acLoanInterest', g.loanInterestPaid);
+  setVal('acLoanBalance', g.loanRemaining);
 
   const lines = [];
-  lines.push(`<p class="hint">未實現損益：<strong>${acc.unrealized.length}</strong> 檔（快照日 ${acc.unrealizedSnapshotDate || '—'}）</p>`);
-  lines.push(`<p class="hint">投資明細：<strong>${acc.trades.length}</strong> 筆交易</p>`);
-  lines.push(`<p class="hint">已實現損益：<strong>${acc.realized.length}</strong> 筆</p>`);
-  lines.push(`<p class="hint">歷史快照：<strong>${(acc.snapshots||[]).length}</strong> 筆</p>`);
+  lines.push(`<p class="hint">未實現損益：<strong>${acc.unrealized.length}</strong> 檔（快照日 ${acc.unrealizedSnapshotDate || '—'}）　|　投資明細：<strong>${acc.trades.length}</strong> 筆　|　已實現損益：<strong>${acc.realized.length}</strong> 筆　|　歷史快照：<strong>${(acc.snapshots||[]).length}</strong> 筆　|　借款：<strong>${(acc.loans||[]).length}</strong> 筆</p>`);
   status.innerHTML = lines.join('');
+
+  renderMonthly();
+}
+
+// ---------- 每月損益彙總 ----------
+function getMonthKey(dateStr) {
+  if (!dateStr) return '';
+  const m = dateStr.match(/^(\d{4})\/(\d{1,2})/);
+  if (!m) return '';
+  return `${m[1]}-${m[2].padStart(2,'0')}`;
+}
+
+function buildMonthlyData(acc) {
+  // key: 'YYYY-MM' -> { realizedPL, interest, shortFee, adjust, loanInterest, tradeCount, tradeAmount, realizedItems[], tradeItems[] }
+  const months = new Map();
+  const ensure = (k) => {
+    if (!months.has(k)) months.set(k, {
+      key: k, realizedPL: 0, interest: 0, shortFee: 0,
+      adjust: 0, loanInterest: 0,
+      tradeCount: 0, tradeAmount: 0,
+      realizedItems: [], tradeItems: []
+    });
+    return months.get(k);
+  };
+
+  // 已實現：以賣出日為準
+  for (const r of (acc.realized || [])) {
+    const k = getMonthKey(r.sellDate);
+    if (!k) continue;
+    const m = ensure(k);
+    m.realizedPL += (r.pl || 0);
+    m.interest += (r.interest || 0);
+    m.shortFee += (r.shortFee || 0);
+    m.adjust += (r.adjust || 0);
+    m.realizedItems.push(r);
+  }
+
+  // 投資明細：以成交日為準
+  for (const t of (acc.trades || [])) {
+    const k = getMonthKey(t.date);
+    if (!k) continue;
+    const m = ensure(k);
+    m.tradeCount++;
+    m.tradeAmount += (t.amount || 0);
+    m.tradeItems.push(t);
+  }
+
+  // 借款利息支付：以付款日為準
+  for (const l of (acc.loans || [])) {
+    for (const p of (l.interestPayments || [])) {
+      const k = getMonthKey(p.date);
+      if (!k) continue;
+      const m = ensure(k);
+      m.loanInterest += (p.amount || 0);
+    }
+  }
+
+  // 計算實際損益（已實現損益 + 調整 - 借款利息）
+  // 注意：盈虧已經扣過融資利息和融券手續費
+  for (const m of months.values()) {
+    m.actual = m.realizedPL + m.adjust - m.loanInterest;
+  }
+
+  return [...months.values()].sort((a, b) => b.key.localeCompare(a.key));
+}
+
+const _expandedMonths = new Set();
+
+function renderMonthly() {
+  const acc = getCurrentAccount();
+  const tb = document.querySelector('#monthlyTable tbody');
+  const yearSel = document.getElementById('monthlyYear');
+  if (!acc) return;
+
+  const data = buildMonthlyData(acc);
+
+  // 年份下拉
+  const years = [...new Set(data.map(m => m.key.slice(0,4)))].sort().reverse();
+  const currentYear = yearSel.value;
+  yearSel.innerHTML = '<option value="">所有年份</option>' +
+    years.map(y => `<option value="${y}" ${y===currentYear?'selected':''}>${y}</option>`).join('');
+
+  const filtered = currentYear ? data.filter(m => m.key.startsWith(currentYear)) : data;
+
+  if (!filtered.length) {
+    tb.innerHTML = '<tr><td colspan="10" class="empty-state">尚無資料（請先匯入已實現損益或投資明細）</td></tr>';
+    return;
+  }
+
+  const rows = [];
+  for (const m of filtered) {
+    const expanded = _expandedMonths.has(m.key);
+    const [year, month] = m.key.split('-');
+    rows.push(`
+      <tr class="month-row" data-month="${m.key}">
+        <td><span class="month-toggle ${expanded?'expanded':''}">▶</span></td>
+        <td><span class="year-tag">${year}</span><strong>${parseInt(month)}月</strong></td>
+        <td class="${plClass(m.realizedPL)}">${fmt(m.realizedPL,{sign:true})}</td>
+        <td>${fmt(m.interest)}</td>
+        <td>${fmt(m.shortFee)}</td>
+        <td class="${m.loanInterest?'neg':''}">${m.loanInterest ? '-'+fmt(m.loanInterest) : '—'}</td>
+        <td class="${plClass(m.adjust)}">${m.adjust?fmt(m.adjust,{sign:true}):'—'}</td>
+        <td class="hl ${plClass(m.actual)}">${fmt(m.actual,{sign:true})}</td>
+        <td>${m.tradeCount}</td>
+        <td>${fmt(m.tradeAmount)}</td>
+      </tr>
+    `);
+    if (expanded) {
+      rows.push(`<tr class="month-detail-row"><td colspan="10">${renderMonthDetail(m)}</td></tr>`);
+    }
+  }
+  tb.innerHTML = rows.join('');
+
+  // 綁定展開
+  tb.querySelectorAll('.month-row').forEach(row => {
+    row.onclick = () => {
+      const k = row.dataset.month;
+      if (_expandedMonths.has(k)) _expandedMonths.delete(k); else _expandedMonths.add(k);
+      renderMonthly();
+    };
+  });
+}
+
+function renderMonthDetail(m) {
+  const html = [];
+
+  // 已實現損益細項
+  if (m.realizedItems.length > 0) {
+    html.push('<div class="nested">');
+    html.push('<h4 style="padding:10px 14px 0">💰 已實現損益細項（' + m.realizedItems.length + ' 筆）</h4>');
+    html.push('<table class="loan-subtable"><thead><tr>');
+    html.push('<th>代號</th><th>名稱</th><th>類別</th><th>賣出日</th><th>買進日</th><th>數量</th><th>賣價</th><th>買價</th><th>盈虧</th><th>利息</th><th>融券費</th><th>調整</th><th>實際</th>');
+    html.push('</tr></thead><tbody>');
+    for (const r of m.realizedItems) {
+      const actual = r.pl + (r.adjust || 0);
+      html.push(`<tr>
+        <td>${r.code}</td><td>${r.name||''}</td><td>${r.sellCategory||''}</td>
+        <td>${r.sellDate}</td><td>${r.buyDate||'—'}</td>
+        <td>${fmt(r.qty)}</td>
+        <td>${fmt(r.sellPrice,{decimals:2})}</td>
+        <td>${fmt(r.buyPrice,{decimals:2})}</td>
+        <td class="${plClass(r.pl)}">${fmt(r.pl,{sign:true})}</td>
+        <td>${fmt(r.interest||0)}</td>
+        <td>${fmt(r.shortFee||0)}</td>
+        <td class="${plClass(r.adjust||0)}">${(r.adjust||0)?fmt(r.adjust,{sign:true}):'—'}</td>
+        <td class="${plClass(actual)}"><strong>${fmt(actual,{sign:true})}</strong></td>
+      </tr>`);
+    }
+    html.push('</tbody></table></div>');
+  }
+
+  // 該月投資明細（交易紀錄）
+  if (m.tradeItems.length > 0) {
+    html.push('<div class="nested">');
+    html.push('<h4 style="padding:10px 14px 0">📋 投資明細（' + m.tradeItems.length + ' 筆）</h4>');
+    html.push('<table class="loan-subtable"><thead><tr>');
+    html.push('<th>日期</th><th>代號</th><th>名稱</th><th>買賣</th><th>類別</th><th>數量</th><th>單價</th><th>價金</th><th>手續費</th><th>交易稅</th><th>利息</th><th>損益</th>');
+    html.push('</tr></thead><tbody>');
+    for (const t of m.tradeItems) {
+      html.push(`<tr>
+        <td>${t.date}</td><td>${t.code}</td><td>${t.name||''}</td>
+        <td>${t.action||''}</td><td>${t.category||''}</td>
+        <td>${fmt(t.qty)}</td>
+        <td>${fmt(t.price,{decimals:2})}</td>
+        <td>${fmt(t.amount)}</td>
+        <td>${fmt(t.fee)}</td>
+        <td>${fmt(t.tax)}</td>
+        <td>${fmt(t.marginInterest||0)}</td>
+        <td class="${plClass(t.pl||0)}">${(t.pl||0)?fmt(t.pl,{sign:true}):'—'}</td>
+      </tr>`);
+    }
+    html.push('</tbody></table></div>');
+  }
+
+  // 該月借款利息支付
+  const loanPayments = [];
+  for (const l of (getCurrentAccount().loans || [])) {
+    for (const p of (l.interestPayments || [])) {
+      if (getMonthKey(p.date) === m.key) {
+        loanPayments.push({ ...p, loanId: l.id, purpose: l.purpose });
+      }
+    }
+  }
+  if (loanPayments.length > 0) {
+    html.push('<div class="nested">');
+    html.push('<h4 style="padding:10px 14px 0">🏛️ 該月借款利息支付（' + loanPayments.length + ' 筆）</h4>');
+    html.push('<table class="loan-subtable"><thead><tr>');
+    html.push('<th>日期</th><th>借款編號</th><th>用途</th><th>金額</th><th>備註</th>');
+    html.push('</tr></thead><tbody>');
+    for (const p of loanPayments) {
+      html.push(`<tr>
+        <td>${p.date}</td><td>${p.loanId}</td><td>${p.purpose||''}</td>
+        <td class="neg">-${fmt(p.amount)}</td>
+        <td>${p.note||''}</td>
+      </tr>`);
+    }
+    html.push('</tbody></table></div>');
+  }
+
+  if (html.length === 0) html.push('<div class="empty-state">該月無細項資料</div>');
+  return html.join('');
+}
+
+// ---------- 匯出每月損益 Excel ----------
+function exportMonthlyExcel() {
+  const acc = getCurrentAccount();
+  if (!acc) return toast('請先選擇帳戶', 'err');
+  const data = buildMonthlyData(acc);
+  if (!data.length) return toast('沒有資料可匯出', 'err');
+
+  const headers = ['月份','已實現損益','融資利息','融券手續費','借款利息','調整金額','實際損益','交易筆數','總成交金額'];
+  const rows = data.map(m => [
+    m.key, m.realizedPL, m.interest, m.shortFee,
+    m.loanInterest, m.adjust, m.actual,
+    m.tradeCount, m.tradeAmount
+  ]);
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '每月損益');
+  const ts = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `每月損益_${acc.broker}_${acc.name}_${ts}.xlsx`);
+  toast('已匯出 Excel', 'ok');
 }
 
 // ---------- 已實現損益 ----------
@@ -764,7 +1019,362 @@ function renderUnrealized() {
   });
 }
 
-// ---------- 投資明細 ----------
+// ============================================================
+// 股票借款
+// ============================================================
+
+function loanGenId(acc) {
+  const existing = (acc.loans || []).map(l => l.id);
+  let n = existing.length + 1;
+  while (existing.includes('LOAN-' + String(n).padStart(3,'0'))) n++;
+  return 'LOAN-' + String(n).padStart(3, '0');
+}
+
+function calcEstimatedInterest(loan, asOfDate = new Date()) {
+  // 預估應付利息 = 本金 × 年利率 × 天數 / 365
+  // 還款部分需從還款日起停止計息（簡化：用平均剩餘本金估算）
+  const rate = (loan.rate || 0) / 100;
+  const start = new Date(loan.startDate);
+  if (isNaN(start)) return 0;
+  const end = loan.status === 'settled' && loan.repayments && loan.repayments.length > 0
+    ? new Date(loan.repayments[loan.repayments.length-1].date)
+    : asOfDate;
+  if (isNaN(end) || end < start) return 0;
+
+  // 用「分段計息」：從起始日開始，依還款事件變化本金
+  const events = (loan.repayments || []).slice().sort((a,b) => a.date.localeCompare(b.date));
+  let principal = loan.principal || 0;
+  let cursor = start;
+  let total = 0;
+
+  for (const ev of events) {
+    const evDate = new Date(ev.date);
+    if (isNaN(evDate) || evDate <= cursor) continue;
+    if (evDate > end) break;
+    const days = (evDate - cursor) / 86400000;
+    total += principal * rate * days / 365;
+    principal -= (ev.amount || 0);
+    cursor = evDate;
+  }
+  // 最後一段（cursor → end）
+  if (principal > 0 && end > cursor) {
+    const days = (end - cursor) / 86400000;
+    total += principal * rate * days / 365;
+  }
+  return Math.round(total);
+}
+
+function renderLoans() {
+  const acc = getCurrentAccount();
+  const list = document.getElementById('loanList');
+  const nameSpan = document.getElementById('loansAccountName');
+  if (!acc) {
+    nameSpan.textContent = '—';
+    list.innerHTML = '<div class="empty-state">尚未選擇帳戶</div>';
+    ['loanTotalPrincipal','loanTotalRepaid','loanRemaining','loanInterestPaid','loanInterestEstimated','loanActiveCount']
+      .forEach(id => setVal(id, '—'));
+    return;
+  }
+  nameSpan.textContent = `${acc.broker} - ${acc.name}`;
+
+  const loans = acc.loans || [];
+  const totalPrincipal = loans.reduce((s,l) => s + (l.principal || 0), 0);
+  const totalRepaid = loans.reduce((s,l) => s + (l.repayments||[]).reduce((ss,r) => ss+(r.amount||0), 0), 0);
+  const interestPaid = loans.reduce((s,l) => s + (l.interestPayments||[]).reduce((ss,r) => ss+(r.amount||0), 0), 0);
+  const interestEst = loans.reduce((s,l) => s + calcEstimatedInterest(l), 0);
+  const activeCount = loans.filter(l => l.status !== 'settled').length;
+
+  setVal('loanTotalPrincipal', totalPrincipal);
+  setVal('loanTotalRepaid', totalRepaid);
+  setVal('loanRemaining', totalPrincipal - totalRepaid);
+  setVal('loanInterestPaid', interestPaid);
+  setVal('loanInterestEstimated', interestEst);
+  setVal('loanActiveCount', activeCount);
+
+  if (!loans.length) {
+    list.innerHTML = '<div class="empty-state">尚無借款紀錄。點上方「＋ 新增借款」開始記錄。</div>';
+    return;
+  }
+
+  list.innerHTML = loans.map(l => renderLoanCard(l)).join('');
+  bindLoanCardEvents();
+}
+
+function renderLoanCard(loan) {
+  const principal = loan.principal || 0;
+  const repaid = (loan.repayments || []).reduce((s,r) => s + (r.amount||0), 0);
+  const remaining = principal - repaid;
+  const interestPaid = (loan.interestPayments || []).reduce((s,r) => s + (r.amount||0), 0);
+  const interestEst = calcEstimatedInterest(loan);
+  const settled = loan.status === 'settled';
+
+  let interestRows = (loan.interestPayments || []).slice().reverse().map((p, i) => `
+    <tr>
+      <td>${p.date}</td>
+      <td>${fmt(p.amount)}</td>
+      <td>${p.note || ''}</td>
+      <td><button class="btn-mini danger" data-act="del-int" data-loan="${loan.id}" data-idx="${(loan.interestPayments||[]).length-1-i}">刪除</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="empty-state">無紀錄</td></tr>';
+
+  let repayRows = (loan.repayments || []).slice().reverse().map((p, i) => {
+    // 計算當時還款後剩餘本金
+    let bal = principal;
+    const sorted = (loan.repayments || []).slice().sort((a,b) => a.date.localeCompare(b.date));
+    for (const r of sorted) {
+      bal -= (r.amount || 0);
+      if (r === p || (r.date===p.date && r.amount===p.amount && r.note===p.note)) break;
+    }
+    return `
+    <tr>
+      <td>${p.date}</td>
+      <td>${fmt(p.amount)}</td>
+      <td>${fmt(Math.max(0, bal))}</td>
+      <td>${p.note || ''}</td>
+      <td><button class="btn-mini danger" data-act="del-rep" data-loan="${loan.id}" data-idx="${(loan.repayments||[]).length-1-i}">刪除</button></td>
+    </tr>
+  `;}).join('') || '<tr><td colspan="5" class="empty-state">無紀錄</td></tr>';
+
+  const diff = interestPaid - interestEst;
+  const diffStr = diff === 0 ? '—' : (diff > 0 ? '多付 +' + fmt(Math.abs(diff)) : '少付 -' + fmt(Math.abs(diff)));
+
+  return `
+    <div class="loan-card">
+      <div class="loan-card-header ${settled?'settled':''}">
+        <span class="loan-id">${loan.id}</span>
+        <span class="loan-purpose">${loan.purpose || '（無說明）'}</span>
+        <span class="loan-status ${settled?'settled':''}">${settled?'已結清':'進行中'}</span>
+      </div>
+      <div class="loan-card-body">
+        <div class="loan-fields">
+          <div class="loan-field"><div class="label">借款金額</div><div class="value">${fmt(principal)}</div></div>
+          <div class="loan-field"><div class="label">年利率</div><div class="value">${(loan.rate||0).toFixed(2)}%</div></div>
+          <div class="loan-field"><div class="label">起始日</div><div class="value">${loan.startDate || '—'}</div></div>
+          <div class="loan-field"><div class="label">到期日</div><div class="value">${loan.dueDate || '—'}</div></div>
+          <div class="loan-field"><div class="label">已還款</div><div class="value">${fmt(repaid)}</div></div>
+          <div class="loan-field"><div class="label">剩餘本金</div><div class="value ${remaining>0?'':'pos'}">${fmt(Math.max(0, remaining))}</div></div>
+          <div class="loan-field"><div class="label">已付利息</div><div class="value">${fmt(interestPaid)}</div></div>
+          <div class="loan-field"><div class="label">預估應付利息</div><div class="value">${fmt(interestEst)}</div></div>
+          <div class="loan-field"><div class="label">實付 vs 預估</div><div class="value ${diff>0?'neg':(diff<0?'pos':'')}">${diffStr}</div></div>
+        </div>
+
+        <div class="loan-subsection">
+          <h4>💸 利息支付紀錄</h4>
+          <table class="loan-subtable">
+            <thead><tr><th>日期</th><th>金額</th><th>備註</th><th></th></tr></thead>
+            <tbody>${interestRows}</tbody>
+          </table>
+        </div>
+
+        <div class="loan-subsection">
+          <h4>💰 還款紀錄</h4>
+          <table class="loan-subtable">
+            <thead><tr><th>日期</th><th>還款金額</th><th>還款後本金</th><th>備註</th><th></th></tr></thead>
+            <tbody>${repayRows}</tbody>
+          </table>
+        </div>
+
+        <div class="loan-actions">
+          <button class="btn-mini primary" data-act="add-int" data-loan="${loan.id}">＋ 新增利息支付</button>
+          <button class="btn-mini primary" data-act="add-rep" data-loan="${loan.id}">＋ 新增還款</button>
+          <button class="btn-mini" data-act="edit" data-loan="${loan.id}">編輯</button>
+          <button class="btn-mini" data-act="toggle" data-loan="${loan.id}">${settled?'標為進行中':'標為已結清'}</button>
+          <button class="btn-mini danger" data-act="delete" data-loan="${loan.id}">刪除借款</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function bindLoanCardEvents() {
+  document.querySelectorAll('#loanList button[data-act]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const act = btn.dataset.act;
+      const loanId = btn.dataset.loan;
+      const acc = getCurrentAccount();
+      const loan = acc.loans.find(l => l.id === loanId);
+      if (!loan) return;
+
+      if (act === 'add-int') await addInterestPayment(loan);
+      else if (act === 'add-rep') await addRepayment(loan);
+      else if (act === 'edit') await editLoan(loan);
+      else if (act === 'toggle') {
+        loan.status = loan.status === 'settled' ? 'active' : 'settled';
+        save(); renderLoans(); renderAll();
+        toast(loan.status === 'settled' ? '已標為已結清' : '已標為進行中', 'ok');
+      }
+      else if (act === 'delete') {
+        const ok = await confirmDialog('刪除借款', `確定刪除「${loan.id} - ${loan.purpose||''}」？所有利息和還款紀錄會一併消失。`);
+        if (ok) {
+          acc.loans = acc.loans.filter(l => l.id !== loanId);
+          save(); renderLoans(); renderAll();
+          toast('已刪除', 'ok');
+        }
+      }
+      else if (act === 'del-int') {
+        const idx = parseInt(btn.dataset.idx, 10);
+        loan.interestPayments.splice(idx, 1);
+        save(); renderLoans(); renderAll();
+      }
+      else if (act === 'del-rep') {
+        const idx = parseInt(btn.dataset.idx, 10);
+        loan.repayments.splice(idx, 1);
+        // 重新評估狀態
+        const repaid = loan.repayments.reduce((s,r) => s+(r.amount||0), 0);
+        if (repaid < loan.principal) loan.status = 'active';
+        save(); renderLoans(); renderAll();
+      }
+    };
+  });
+}
+
+async function addLoan() {
+  const acc = getCurrentAccount();
+  if (!acc) return toast('請先選擇帳戶', 'err');
+  const today = todayStr().replace(/\//g, '-');
+  const result = await showModal({
+    title: '新增借款',
+    html: `
+      <div style="display:grid;gap:10px">
+        <label>用途/備註<input type="text" id="lf-purpose" placeholder="例：買保瑞融資自備款"></label>
+        <label>借款金額<input type="number" id="lf-principal" placeholder="500000"></label>
+        <label>年利率(%)<input type="number" id="lf-rate" placeholder="2.5" step="0.01"></label>
+        <label>起始日<input type="date" id="lf-start" value="${today}"></label>
+        <label>到期日<input type="date" id="lf-due"></label>
+      </div>
+    `,
+    onConfirm: (body) => ({
+      purpose: body.querySelector('#lf-purpose').value.trim(),
+      principal: parseFloat(body.querySelector('#lf-principal').value) || 0,
+      rate: parseFloat(body.querySelector('#lf-rate').value) || 0,
+      startDate: body.querySelector('#lf-start').value,
+      dueDate: body.querySelector('#lf-due').value
+    })
+  });
+  if (!result || !result.principal) return;
+
+  const loan = {
+    id: loanGenId(acc),
+    purpose: result.purpose,
+    principal: result.principal,
+    rate: result.rate,
+    startDate: Parsers.formatDate(result.startDate),
+    dueDate: result.dueDate ? Parsers.formatDate(result.dueDate) : '',
+    status: 'active',
+    interestPayments: [],
+    repayments: [],
+    createdAt: new Date().toISOString()
+  };
+  acc.loans.push(loan);
+  save();
+  renderLoans();
+  renderAll();
+  toast(`已新增借款 ${loan.id}`, 'ok');
+}
+
+async function editLoan(loan) {
+  const result = await showModal({
+    title: `編輯借款 ${loan.id}`,
+    html: `
+      <div style="display:grid;gap:10px">
+        <label>用途/備註<input type="text" id="lf-purpose" value="${(loan.purpose||'').replace(/"/g,'&quot;')}"></label>
+        <label>借款金額<input type="number" id="lf-principal" value="${loan.principal||0}"></label>
+        <label>年利率(%)<input type="number" id="lf-rate" value="${loan.rate||0}" step="0.01"></label>
+        <label>起始日<input type="date" id="lf-start" value="${(loan.startDate||'').replace(/\//g,'-')}"></label>
+        <label>到期日<input type="date" id="lf-due" value="${(loan.dueDate||'').replace(/\//g,'-')}"></label>
+      </div>
+    `,
+    onConfirm: (body) => ({
+      purpose: body.querySelector('#lf-purpose').value.trim(),
+      principal: parseFloat(body.querySelector('#lf-principal').value) || 0,
+      rate: parseFloat(body.querySelector('#lf-rate').value) || 0,
+      startDate: body.querySelector('#lf-start').value,
+      dueDate: body.querySelector('#lf-due').value
+    })
+  });
+  if (!result) return;
+  loan.purpose = result.purpose;
+  loan.principal = result.principal;
+  loan.rate = result.rate;
+  loan.startDate = Parsers.formatDate(result.startDate);
+  loan.dueDate = result.dueDate ? Parsers.formatDate(result.dueDate) : '';
+  save();
+  renderLoans();
+  renderAll();
+  toast('已更新', 'ok');
+}
+
+async function addInterestPayment(loan) {
+  const today = todayStr().replace(/\//g, '-');
+  const result = await showModal({
+    title: `新增利息支付 - ${loan.id}`,
+    html: `
+      <div style="display:grid;gap:10px">
+        <label>日期<input type="date" id="ip-date" value="${today}"></label>
+        <label>金額<input type="number" id="ip-amount" placeholder="例：1042"></label>
+        <label>備註<input type="text" id="ip-note" placeholder="可不填"></label>
+      </div>
+    `,
+    onConfirm: (body) => ({
+      date: body.querySelector('#ip-date').value,
+      amount: parseFloat(body.querySelector('#ip-amount').value) || 0,
+      note: body.querySelector('#ip-note').value.trim()
+    })
+  });
+  if (!result || !result.amount) return;
+  if (!loan.interestPayments) loan.interestPayments = [];
+  loan.interestPayments.push({
+    date: Parsers.formatDate(result.date),
+    amount: result.amount,
+    note: result.note
+  });
+  loan.interestPayments.sort((a,b) => a.date.localeCompare(b.date));
+  save();
+  renderLoans();
+  renderAll();
+  toast('已新增利息支付', 'ok');
+}
+
+async function addRepayment(loan) {
+  const today = todayStr().replace(/\//g, '-');
+  const repaid = (loan.repayments||[]).reduce((s,r) => s+(r.amount||0), 0);
+  const remaining = (loan.principal||0) - repaid;
+  const result = await showModal({
+    title: `新增還款 - ${loan.id}`,
+    html: `
+      <div style="display:grid;gap:10px">
+        <label>日期<input type="date" id="rp-date" value="${today}"></label>
+        <label>還款金額（剩餘 ${fmt(remaining)}）<input type="number" id="rp-amount"></label>
+        <label>備註<input type="text" id="rp-note" placeholder="可不填"></label>
+        <label><input type="checkbox" id="rp-settle"> 此為全額還清</label>
+      </div>
+    `,
+    onConfirm: (body) => ({
+      date: body.querySelector('#rp-date').value,
+      amount: parseFloat(body.querySelector('#rp-amount').value) || 0,
+      note: body.querySelector('#rp-note').value.trim(),
+      settle: body.querySelector('#rp-settle').checked
+    })
+  });
+  if (!result || !result.amount) return;
+  if (!loan.repayments) loan.repayments = [];
+  loan.repayments.push({
+    date: Parsers.formatDate(result.date),
+    amount: result.amount,
+    note: result.note
+  });
+  loan.repayments.sort((a,b) => a.date.localeCompare(b.date));
+
+  const newRepaid = loan.repayments.reduce((s,r) => s+(r.amount||0), 0);
+  if (result.settle || newRepaid >= (loan.principal||0)) {
+    loan.status = 'settled';
+  }
+  save();
+  renderLoans();
+  renderAll();
+  toast('已新增還款', 'ok');
+}
 function renderTrades() {
   const acc = getCurrentAccount();
   const tb = document.querySelector('#tradesTable tbody');
@@ -856,6 +1466,13 @@ function bindEvents() {
 
   // 匯出已實現
   document.getElementById('btnExportRealized').onclick = exportRealizedExcel;
+
+  // 每月損益
+  document.getElementById('monthlyYear').onchange = renderMonthly;
+  document.getElementById('btnExportMonthly').onclick = exportMonthlyExcel;
+
+  // 借款
+  document.getElementById('btnAddLoan').onclick = addLoan;
 
   // 清空帳戶
   document.getElementById('btnClearAccount').onclick = async () => {
