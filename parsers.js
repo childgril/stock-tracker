@@ -1,7 +1,7 @@
 // ============================================================
 // 券商檔案解析器
-// 目前支援：元大（Ｄ系列）
-// 之後可加：國泰、新光
+// 支援：元大（Ｄ系列）、國泰、新光（M系列）
+// 所有解析器都自動偵測格式，不需手動選擇
 // ============================================================
 
 const Parsers = (() => {
@@ -10,7 +10,9 @@ const Parsers = (() => {
   function toNumber(v) {
     if (v == null || v === '') return 0;
     if (typeof v === 'number') return v;
-    const s = String(v).replace(/,/g, '').replace(/\s/g, '').replace(/^\+/, '');
+    const raw = String(v).trim();
+    if (raw === '--' || raw === '-' || raw === 'N/A') return 0;
+    const s = raw.replace(/,/g, '').replace(/\s/g, '').replace(/^\+/, '');
     const n = parseFloat(s);
     return isNaN(n) ? 0 : n;
   }
@@ -34,11 +36,20 @@ const Parsers = (() => {
   function formatDate(d) {
     if (!d) return '';
     if (typeof d === 'string') {
+      // 民國年「114/02/19」→ 西元 2025/02/19
+      const rocMatch = d.match(/^(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})/);
+      if (rocMatch) {
+        const y = parseInt(rocMatch[1], 10);
+        const m = rocMatch[2].padStart(2, '0');
+        const day = rocMatch[3].padStart(2, '0');
+        if (y < 200) return `${y + 1911}/${m}/${day}`;
+        return `${y}/${m}/${day}`;
+      }
       // 已是字串 → 統一成 yyyy/mm/dd
       const parts = d.replace(/-/g, '/').split('/').map(s => s.trim());
       if (parts.length === 3) {
-        const y = parts[0].length === 4 ? parts[0] : `20${parts[0]}`;
-        return `${y}/${parts[1].padStart(2,'0')}/${parts[2].padStart(2,'0')}`;
+        const yy = parts[0].length === 4 ? parts[0] : `20${parts[0]}`;
+        return `${yy}/${parts[1].padStart(2,'0')}/${parts[2].padStart(2,'0')}`;
       }
       return d;
     }
@@ -58,8 +69,13 @@ const Parsers = (() => {
 
   // ---------- 自動偵測格式 ----------
   function detectFormat(rows, type) {
-    // 把前 3 列攤平
-    const headerText = rows.slice(0, 3).flat().map(x => x == null ? '' : String(x)).join('|');
+    // 把前 5 列攤平
+    const headerText = rows.slice(0, 5).flat().map(x => x == null ? '' : String(x)).join('|');
+
+    // 新光特徵：第 1-2 列是「帳號」「8560-」開頭，欄位有「資息」「券息」「沖銷均價」「現沖借券費」「借貸還款」
+    if (/(資息.*券息|現沖借券費|借貸還款|沖銷均價)/.test(headerText)) return 'sinopac';
+    // 未實現的新光特徵：「商品.*股號」「股票總市值」「預估損益」「預估淨收付」
+    if (type === 'unrealized' && /(預估淨收付|股票總市值|預估損益|可用股數)/.test(headerText)) return 'sinopac';
 
     // 國泰特徵：欄位明確、有「自備款/保證金」(中間斜線)、有「淨收額」「淨付額」、未實現有「股票現值」
     if (type === 'unrealized' && /股票現值|未實現損益率/.test(headerText)) return 'cathay';
@@ -75,16 +91,14 @@ const Parsers = (() => {
       if (a1 === '代號') return 'yuanta';
     }
     if (type === 'unrealized') {
-      // 元大未實現第一列有合併儲存格「明細」「股票」
       const a1 = String(rows[0]?.[0] || '').trim();
       if (a1 === '明細') return 'yuanta';
     }
     if (type === 'trades') {
-      // 元大投資明細第一列 A1 = "成交日期"，但欄位有 22 欄
       if ((rows[0] || []).length >= 20) return 'yuanta';
     }
 
-    return 'yuanta'; // 不確定就先試元大
+    return 'yuanta';
   }
 
   // ============================================================
@@ -325,10 +339,206 @@ const Parsers = (() => {
   }
 
   // ============================================================
-  // 國泰：已實現損益
-  // 第 1 列：空或標題；第 2 列：表頭（買進日期、賣出日期、股票名稱、幣別、交易類別、成交股數、買進單價、賣出單價、損益、報酬率）
-  // 資料從第 3 列起
+  // 新光（SinoPac/M）：未實現損益
+  // 第 1 列：查詢日期
+  // 第 2-3 列：帳號、委託狀態
+  // 第 4 列：合計
+  // 第 5 列：表頭（商品、股號、類別、股數、可用股數、市價、市值、成本價、成本、預估損益、
+  //              成交均價、報酬率(%)、預估淨收付、融資金、融券金、保證金、擔保品、利息、手續費、幣別）
+  // 資料從第 6 列起
   // ============================================================
+  function parseUnrealizedSinopac(rows) {
+    const items = [];
+    // 找表頭列
+    let headerRow = -1;
+    for (let i = 0; i < Math.min(8, rows.length); i++) {
+      const r = rows[i] || [];
+      const flat = r.map(x => String(x || '').trim()).join('|');
+      if (/商品.*股號.*類別.*股數/.test(flat)) {
+        headerRow = i; break;
+      }
+    }
+    if (headerRow < 0) headerRow = 4;
+
+    for (let i = headerRow + 1; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r) continue;
+      const name = toString(r[0]);
+      const code = toString(r[1]);
+      if (!name && !code) continue;
+      if (!code || (typeof r[1] !== 'number' && !/^[A-Z0-9]+$/.test(code))) continue;
+
+      const rateRaw = toNumber(r[11]); // 已是百分比數字（如 -9.46）
+      const rateStr = rateRaw === 0 ? '—' : ((rateRaw > 0 ? '+' : '') + rateRaw.toFixed(2) + '%');
+
+      items.push({
+        code, name,
+        category: toString(r[2]) || '現股',  // 普通 → 改成「現股」
+        qty: toNumber(r[3]),
+        price: toNumber(r[5]),
+        marketValue: toNumber(r[6]),
+        cost: toNumber(r[8]),
+        avgCost: toNumber(r[10]) || toNumber(r[7]),
+        fee: toNumber(r[18]),
+        tax: 0,
+        interest: toNumber(r[17]),
+        pl: toNumber(r[9]),
+        rate: rateStr,
+        currency: toString(r[19])
+      });
+    }
+    return items;
+  }
+
+  // ============================================================
+  // 新光：交易明細
+  // 第 1-3 列：帳號、合計、總計
+  // 第 4 列：表頭（委託日期、股票、代號、成交股數、單價、類別、價金、手續費、交易稅、
+  //              融券手續費、預繳金、淨收付、資息、券息、損益、標借費、現沖借券費、沖銷均價、
+  //              報酬率(%)、當沖、借貸還款、委託書號、幣別）
+  // 資料從第 5 列起
+  // ============================================================
+  function parseTradesSinopac(rows) {
+    const items = [];
+    // 找表頭列
+    let headerRow = -1;
+    for (let i = 0; i < Math.min(8, rows.length); i++) {
+      const r = rows[i] || [];
+      const flat = r.map(x => String(x || '').trim()).join('|');
+      if (/委託日期.*股票.*代號.*類別/.test(flat)) {
+        headerRow = i; break;
+      }
+    }
+    if (headerRow < 0) headerRow = 3;
+
+    for (let i = headerRow + 1; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || !r[0]) continue;
+      const dateRaw = r[0];
+      // 跳過合計列（A 欄是「總損益」「總報酬」等）
+      if (typeof dateRaw === 'string' && !/^\d{2,4}[/-]\d{1,2}[/-]\d{1,2}/.test(dateRaw.trim())) continue;
+      if (!(dateRaw instanceof Date) && typeof dateRaw !== 'string') continue;
+
+      const code = toString(r[2]);
+      if (!code) continue;
+      const cat = toString(r[5]); // '現買' '現賣' '資買' '資賣' '券賣' '券買'
+
+      let action, category;
+      if (cat === '現買') { action = '買'; category = '現股'; }
+      else if (cat === '現賣') { action = '賣'; category = '現股'; }
+      else if (cat === '資買') { action = '買'; category = '融資'; }
+      else if (cat === '資賣') { action = '賣'; category = '融資'; }
+      else if (cat === '券賣') { action = '賣'; category = '融券'; }
+      else if (cat === '券買') { action = '買'; category = '融券'; }
+      else if (cat.includes('沖')) {
+        category = '現股當沖';
+        action = cat.includes('賣') ? '賣' : '買';
+      }
+      else { action = ''; category = cat; }
+
+      // 資息(12) + 券息(13) 都是利息類，加總
+      const interest = toNumber(r[12]) + toNumber(r[13]);
+      const shortFee = toNumber(r[9]); // 融券手續費
+
+      items.push({
+        date: formatDate(dateRaw),
+        code,
+        name: toString(r[1]),
+        kind: '整股',
+        action, category,
+        rawCategory: cat,
+        qty: toNumber(r[3]),
+        price: toNumber(r[4]),
+        amount: toNumber(r[6]),
+        fee: toNumber(r[7]),
+        tax: toNumber(r[8]),
+        receivable: toNumber(r[11]),
+        marginAmount: 0,
+        ownFund: 0,
+        marginInterest: interest,
+        shortFee,
+        borrowFee: toNumber(r[15]),
+        interestTax: 0,
+        nhi: 0,
+        pl: toNumber(r[14]),
+        settleDate: '',
+        currency: toString(r[22]),
+        orderNo: toString(r[21])
+      });
+    }
+    return items;
+  }
+
+  // ============================================================
+  // 新光：已實現損益
+  // 結構與「交易明細」幾乎一樣，差在沒有「委託日期」改叫「成交日期」、沒有「類別」這欄是直接用同一欄
+  // 第 4 列：表頭（成交日期、股票、代號、類別、成交股數、單價、價金、手續費、交易稅、
+  //              融券手續費、預繳金、淨收付、資息、券息、損益、...、委託書號、幣別）
+  // 資料從第 5 列起
+  // 注意：末尾可能有「已實現損益」「日期區間」之類的合計列要跳過
+  // ============================================================
+  function parseRealizedSinopac(rows) {
+    const items = [];
+    let headerRow = -1;
+    for (let i = 0; i < Math.min(8, rows.length); i++) {
+      const r = rows[i] || [];
+      const flat = r.map(x => String(x || '').trim()).join('|');
+      if (/成交日期.*股票.*代號.*類別.*成交股數/.test(flat)) {
+        headerRow = i; break;
+      }
+    }
+    if (headerRow < 0) headerRow = 3;
+
+    for (let i = headerRow + 1; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || !r[0]) continue;
+      const dateRaw = r[0];
+      // 跳過合計/註解列
+      if (typeof dateRaw === 'string' && !/^\d{2,4}[/-]\d{1,2}[/-]\d{1,2}/.test(dateRaw.trim())) continue;
+      if (!(dateRaw instanceof Date) && typeof dateRaw !== 'string') continue;
+
+      const code = toString(r[2]);
+      if (!code) continue;
+      const cat = toString(r[3]);
+
+      let sellCategory;
+      if (cat === '現賣' || cat === '現買') sellCategory = '現股';
+      else if (cat === '資賣' || cat === '資買') sellCategory = '融資';
+      else if (cat === '券賣' || cat === '券買') sellCategory = '融券';
+      else if (cat.includes('沖')) sellCategory = '現股當沖';
+      else sellCategory = cat;
+
+      const interest = toNumber(r[12]) + toNumber(r[13]); // 資息+券息
+      const shortFee = toNumber(r[9]);
+      const rateRaw = toNumber(r[18]);
+      const rateStr = rateRaw === 0 ? '—' : ((rateRaw > 0 ? '+' : '') + rateRaw.toFixed(2) + '%');
+
+      items.push({
+        code,
+        name: toString(r[1]),
+        sellDate: formatDate(dateRaw),
+        sellOrderNo: toString(r[21]),
+        sellCategory,
+        rawCategory: cat,
+        sellPrice: toNumber(r[5]),
+        // 新光的「沖銷均價」(17) 就是買進均價
+        buyDate: '',
+        buyOrderNo: '',
+        buyCategory: sellCategory,
+        buyPrice: toNumber(r[17]),
+        qty: toNumber(r[4]),
+        cost: toNumber(r[17]) * toNumber(r[4]), // 沖銷均價 × 數量
+        fee: toNumber(r[7]),
+        tax: toNumber(r[8]),
+        pl: toNumber(r[14]),
+        // 新光直接從這張表上就能拿到利息和融券手續費
+        _preInterest: interest,
+        _preShortFee: shortFee,
+        rate: rateStr
+      });
+    }
+    return items;
+  }
   function parseRealizedCathay(rows) {
     const items = [];
     // 找表頭列
@@ -386,6 +596,7 @@ const Parsers = (() => {
     const ws = workbook.Sheets[workbook.SheetNames[0]];
     const rows = sheetToRows(ws);
     const fmt = detectFormat(rows, 'unrealized');
+    if (fmt === 'sinopac') return { broker: 'sinopac', items: parseUnrealizedSinopac(rows) };
     if (fmt === 'cathay') return { broker: 'cathay', items: parseUnrealizedCathay(rows) };
     return { broker: 'yuanta', items: parseUnrealizedYuanta(rows) };
   }
@@ -394,6 +605,7 @@ const Parsers = (() => {
     const ws = workbook.Sheets[workbook.SheetNames[0]];
     const rows = sheetToRows(ws);
     const fmt = detectFormat(rows, 'trades');
+    if (fmt === 'sinopac') return { broker: 'sinopac', items: parseTradesSinopac(rows) };
     if (fmt === 'cathay') return { broker: 'cathay', items: parseTradesCathay(rows) };
     return { broker: 'yuanta', items: parseTradesYuanta(rows) };
   }
@@ -402,6 +614,7 @@ const Parsers = (() => {
     const ws = workbook.Sheets[workbook.SheetNames[0]];
     const rows = sheetToRows(ws);
     const fmt = detectFormat(rows, 'realized');
+    if (fmt === 'sinopac') return { broker: 'sinopac', items: parseRealizedSinopac(rows) };
     if (fmt === 'cathay') return { broker: 'cathay', items: parseRealizedCathay(rows) };
     return { broker: 'yuanta', items: parseRealizedYuanta(rows) };
   }
@@ -417,10 +630,20 @@ const Parsers = (() => {
   // 2. 組總數量比對投資明細上同條件的賣出筆，數量相等者視為一張委託
   // 3. 投資明細的利息/融券手續費按「沖銷成本佔組總成本比例」拆分到組內每筆
   // 4. 同日同股同類別有多張委託時，依數量逐一消耗
+  //
+  // 特例：新光的已實現本身就含「資息」「券息」「融券手續費」欄位，
+  //       會在 _preInterest / _preShortFee 上預先記錄，直接採用不需比對。
   // ============================================================
   function enrichRealizedWithInterest(realizedItems, tradeItems) {
-    // 1. 先把現股的也清成 0（避免殘留舊值）
+    // 1. 先把所有列重設為 0；新光（_preInterest 存在）直接用預設值
     for (const r of realizedItems) {
+      if (r._preInterest != null || r._preShortFee != null) {
+        // 新光：直接用已實現表上的數字
+        r.interest = r._preInterest || 0;
+        r.shortFee = r._preShortFee || 0;
+        r._unmatched = false;
+        continue;
+      }
       if (r.sellCategory !== '融資' && r.sellCategory !== '融券') {
         r.interest = 0; r.shortFee = 0; r._unmatched = false;
       } else {
@@ -440,8 +663,10 @@ const Parsers = (() => {
     }
 
     // 3. 把已實現按 (code, sellDate, sellCategory) 分組（保留原順序）
+    //    跳過新光（已預先填好）
     const realizedBuckets = new Map();
     for (const r of realizedItems) {
+      if (r._preInterest != null || r._preShortFee != null) continue;
       if (r.sellCategory !== '融資' && r.sellCategory !== '融券') continue;
       const k = `${r.code}|${r.sellDate}|${r.sellCategory}`;
       if (!realizedBuckets.has(k)) realizedBuckets.set(k, []);
@@ -451,19 +676,26 @@ const Parsers = (() => {
     let matched = 0;
     let total = 0;
 
-    // 4. 組對組消耗：同一個 key 下，逐一從 tradeBucket 取出 trade，
-    //    按 trade.qty 從 realizedBucket 的開頭吃掉等量的數量
+    // 計入新光那些
+    for (const r of realizedItems) {
+      if (r._preInterest != null || r._preShortFee != null) {
+        if (r.sellCategory === '融資' || r.sellCategory === '融券') {
+          total++;
+          matched++;
+        }
+      }
+    }
+
+    // 4. 組對組消耗
     for (const [key, rzGroup] of realizedBuckets) {
       total += rzGroup.length;
       const trades = tradeBuckets.get(key) || [];
       if (!trades.length) continue;
 
-      // realized 群組依出現順序消耗
       const queue = rzGroup.slice();
-      // 嘗試對每張交易消耗對應數量
       for (const trade of trades) {
         let remaining = trade.qty;
-        const consumed = []; // 這張 trade 涵蓋了哪幾筆 realized
+        const consumed = [];
         let costSum = 0;
         while (remaining > 0 && queue.length > 0) {
           const r = queue[0];
@@ -473,9 +705,6 @@ const Parsers = (() => {
             remaining -= r.qty;
             queue.shift();
           } else {
-            // 已實現的單筆數量比 trade 剩下的還多 → 部分配對
-            // 這種情況代表已實現拆得比交易明細還細（少見）
-            // 退回去：把剩下的當作「無法精確配對」直接給整筆
             consumed.push(r);
             costSum += (r.cost || 0);
             remaining = 0;
@@ -484,7 +713,6 @@ const Parsers = (() => {
         }
         if (consumed.length === 0) continue;
 
-        // 按沖銷成本比例分配利息和融券費
         const interest = trade.marginInterest || 0;
         const sFee = trade.shortFee || 0;
         if (consumed.length === 1) {
@@ -493,7 +721,6 @@ const Parsers = (() => {
           consumed[0]._unmatched = false;
           matched++;
         } else {
-          // 用比例分；用「沖銷成本」分，最後一筆吃尾差
           let allocatedI = 0, allocatedS = 0;
           for (let i = 0; i < consumed.length; i++) {
             const r = consumed[i];
