@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>股票損益追蹤系統</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">📊 股票損益追蹤</div>
+  <div class="account-switcher">
+    <label>帳戶：</label>
+    <select id="accountSelect"></select>
+    <button class="btn-mini" id="btnNewAccount">＋ 新增</button>
+    <button class="btn-mini" id="btnRenameAccount">重新命名</button>
+    <button class="btn-mini danger" id="btnDeleteAccount">刪除</button>
+  </div>
+  <div class="toolbar">
+    <button class="btn-mini" id="btnBackup">📥 匯出備份</button>
+    <button class="btn-mini" id="btnRestore">📤 匯入還原</button>
+    <input type="file" id="restoreFile" accept=".json" hidden>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="overview">📈 總覽（跨帳戶）</button>
+  <button class="tab" data-tab="account">🏦 帳戶明細</button>
+  <button class="tab" data-tab="realized">💰 已實現損益</button>
+  <button class="tab" data-tab="unrealized">📦 未實現損益</button>
+  <button class="tab" data-tab="trades">📋 投資明細</button>
+  <button class="tab" data-tab="import">⬆️ 匯入資料</button>
+</nav>
+
+<main>
+
+<!-- =================== 總覽 =================== -->
+<section id="tab-overview" class="tab-content active">
+  <h2>跨帳戶總覽</h2>
+  <div class="summary-grid">
+    <div class="card"><div class="label">總市值（未實現）</div><div class="value" id="ovTotalMarket">—</div></div>
+    <div class="card"><div class="label">總成本（未實現）</div><div class="value" id="ovTotalCost">—</div></div>
+    <div class="card"><div class="label">未實現損益</div><div class="value" id="ovUnrealizedPL">—</div></div>
+    <div class="card"><div class="label">已實現損益（含調整）</div><div class="value" id="ovRealizedPL">—</div></div>
+    <div class="card"><div class="label">已付融資利息</div><div class="value" id="ovTotalInterest">—</div></div>
+    <div class="card"><div class="label">已付融券手續費</div><div class="value" id="ovTotalShortFee">—</div></div>
+  </div>
+
+  <h3>各帳戶分布</h3>
+  <div class="chart-row">
+    <div class="chart-box"><canvas id="chartAccountMarket"></canvas></div>
+    <div class="chart-box"><canvas id="chartAccountPL"></canvas></div>
+  </div>
+
+  <h3>各帳戶明細表</h3>
+  <table class="data-table" id="ovAccountTable">
+    <thead><tr>
+      <th>帳戶</th><th>市值</th><th>成本</th><th>未實現損益</th>
+      <th>已實現損益</th><th>融資利息</th><th>融券手續費</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h3>未實現損益快照趨勢</h3>
+  <div class="chart-box big"><canvas id="chartTrend"></canvas></div>
+</section>
+
+<!-- =================== 帳戶明細 =================== -->
+<section id="tab-account" class="tab-content">
+  <h2 id="accountTitle">帳戶明細</h2>
+  <div class="summary-grid">
+    <div class="card"><div class="label">市值</div><div class="value" id="acMarket">—</div></div>
+    <div class="card"><div class="label">成本</div><div class="value" id="acCost">—</div></div>
+    <div class="card"><div class="label">未實現損益</div><div class="value" id="acUnrealizedPL">—</div></div>
+    <div class="card"><div class="label">已實現損益</div><div class="value" id="acRealizedPL">—</div></div>
+    <div class="card"><div class="label">融資利息合計</div><div class="value" id="acInterest">—</div></div>
+    <div class="card"><div class="label">融券手續費合計</div><div class="value" id="acShortFee">—</div></div>
+  </div>
+  <div id="acDataStatus"></div>
+</section>
+
+<!-- =================== 已實現損益 =================== -->
+<section id="tab-realized" class="tab-content">
+  <h2>已實現損益</h2>
+  <p class="hint">利息與融券手續費由投資明細自動比對補入；調整金額可手動編輯，會自動儲存。</p>
+  <div class="summary-grid small">
+    <div class="card"><div class="label">原始盈虧合計</div><div class="value" id="rzOriginal">—</div></div>
+    <div class="card"><div class="label">調整金額合計</div><div class="value" id="rzAdjust">—</div></div>
+    <div class="card"><div class="label">實際盈虧合計</div><div class="value" id="rzActual">—</div></div>
+    <div class="card"><div class="label">融資利息合計</div><div class="value" id="rzInterest">—</div></div>
+    <div class="card"><div class="label">融券手續費合計</div><div class="value" id="rzShortFee">—</div></div>
+  </div>
+  <div class="table-toolbar">
+    <input type="text" id="rzSearch" placeholder="🔍 搜尋代號或名稱…">
+    <button class="btn-mini" id="btnExportRealized">📊 匯出 Excel</button>
+  </div>
+  <div class="table-scroll">
+    <table class="data-table" id="realizedTable">
+      <thead><tr>
+        <th>代號</th><th>名稱</th><th>類別</th>
+        <th>賣出日</th><th>賣價</th>
+        <th>買進日</th><th>買價</th>
+        <th>數量</th><th>沖銷成本</th>
+        <th>手續費</th><th>交易稅</th>
+        <th class="hl">利息</th><th class="hl">融券手續費</th>
+        <th class="hl">調整金額</th>
+        <th>備註</th>
+        <th>盈虧</th>
+        <th class="hl">實際盈虧</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================== 未實現損益 =================== -->
+<section id="tab-unrealized" class="tab-content">
+  <h2>未實現損益</h2>
+  <p class="hint" id="unrealizedSnapshotInfo"></p>
+  <div class="summary-grid small">
+    <div class="card"><div class="label">總市值</div><div class="value" id="urMarket">—</div></div>
+    <div class="card"><div class="label">總成本</div><div class="value" id="urCost">—</div></div>
+    <div class="card"><div class="label">未實現損益</div><div class="value" id="urPL">—</div></div>
+    <div class="card"><div class="label">總報酬率</div><div class="value" id="urRate">—</div></div>
+  </div>
+  <div class="table-scroll">
+    <table class="data-table" id="unrealizedTable">
+      <thead><tr>
+        <th>代號</th><th>名稱</th><th>類別</th>
+        <th>數量</th><th>現價</th>
+        <th>市值</th><th>成本金額</th><th>平均單價</th>
+        <th>手續費</th><th>交易稅</th><th>利息</th>
+        <th>損益</th><th>報酬率</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:30px">歷史快照</h3>
+  <p class="hint">每次匯入未實現損益會儲存一筆快照，用來繪製趨勢圖</p>
+  <table class="data-table" id="snapshotTable">
+    <thead><tr>
+      <th>日期</th><th>市值</th><th>成本</th><th>損益</th><th>操作</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<!-- =================== 投資明細 =================== -->
+<section id="tab-trades" class="tab-content">
+  <h2>投資明細</h2>
+  <div class="table-toolbar">
+    <input type="text" id="trSearch" placeholder="🔍 搜尋代號或名稱…">
+    <select id="trFilterType">
+      <option value="">所有類別</option>
+      <option value="現股">現股</option>
+      <option value="融資">融資</option>
+      <option value="融券">融券</option>
+    </select>
+    <select id="trFilterAction">
+      <option value="">買賣</option>
+      <option value="買">買</option>
+      <option value="賣">賣</option>
+    </select>
+  </div>
+  <div class="table-scroll">
+    <table class="data-table" id="tradesTable">
+      <thead><tr>
+        <th>成交日</th><th>代號</th><th>名稱</th>
+        <th>買賣</th><th>類別</th>
+        <th>數量</th><th>單價</th><th>價金</th>
+        <th>手續費</th><th>交易稅</th>
+        <th>融資金額/保證金</th>
+        <th>融資券利息</th><th>融券手續費</th>
+        <th>應收付款</th><th>損益</th><th>交割日</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- =================== 匯入 =================== -->
+<section id="tab-import" class="tab-content">
+  <h2>匯入資料</h2>
+  <p class="hint">目前作用中帳戶：<strong id="currentAccountName">—</strong></p>
+
+  <div class="import-grid">
+    <div class="import-card">
+      <h3>📦 未實現損益</h3>
+      <p>當天帳上餘額，會建立一筆快照</p>
+      <label class="upload-area" for="upUnrealized">
+        <span>點此或拖曳 .xlsx / .csv 檔</span>
+        <input type="file" id="upUnrealized" accept=".xlsx,.xls,.csv" hidden>
+      </label>
+      <label>快照日期：<input type="date" id="snapshotDate"></label>
+    </div>
+
+    <div class="import-card">
+      <h3>📋 投資明細</h3>
+      <p>所有交易紀錄，含融資融券利息資訊</p>
+      <label class="upload-area" for="upTrades">
+        <span>點此或拖曳 .xlsx / .csv 檔</span>
+        <input type="file" id="upTrades" accept=".xlsx,.xls,.csv" hidden>
+      </label>
+      <label><input type="checkbox" id="tradesAppend"> 追加（不取代既有資料）</label>
+    </div>
+
+    <div class="import-card">
+      <h3>💰 已實現損益</h3>
+      <p>會自動比對投資明細補上利息與融券手續費</p>
+      <label class="upload-area" for="upRealized">
+        <span>點此或拖曳 .xlsx / .csv 檔</span>
+        <input type="file" id="upRealized" accept=".xlsx,.xls,.csv" hidden>
+      </label>
+      <label><input type="checkbox" id="realizedAppend"> 追加（不取代既有資料）</label>
+    </div>
+  </div>
+
+  <div id="importLog" class="log-box"></div>
+
+  <h3 style="margin-top:30px">⚠️ 危險操作</h3>
+  <button class="btn-mini danger" id="btnClearAccount">清空目前帳戶所有資料</button>
+</section>
+
+</main>
+
+<div id="toast"></div>
+<div id="modalRoot"></div>
+
+<script src="parsers.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
