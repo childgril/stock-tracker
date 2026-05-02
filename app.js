@@ -656,6 +656,7 @@ function renderAccount() {
   status.innerHTML = lines.join('');
 
   renderMonthly();
+  renderStockAnalysis();
 }
 
 // ---------- 每月損益彙總 ----------
@@ -696,9 +697,16 @@ function buildMonthlyData(acc) {
     const k = getMonthKey(t.date);
     if (!k) continue;
     const m = ensure(k);
-    m.tradeCount++;
-    m.tradeAmount += (t.amount || 0);
-    m.tradeItems.push(t);
+    const isConv = (t.category === '資轉現' || t.action === '資轉現');
+    if (isConv) {
+      // 資轉現：只計入結清利息，不算進交易筆數和成交金額
+      m.interest += (t.marginInterest || 0);
+      m.tradeItems.push(t);
+    } else {
+      m.tradeCount++;
+      m.tradeAmount += (t.amount || 0);
+      m.tradeItems.push(t);
+    }
   }
 
   // 借款利息支付：以付款日為準
@@ -1022,9 +1030,421 @@ function renderUnrealized() {
   });
 }
 
+// ---------- 個股損益分析 ----------
+function buildStockAnalysis(acc) {
+  // key: code, value: 統計
+  const stocks = new Map();
+  const ensure = (code, name) => {
+    if (!stocks.has(code)) {
+      stocks.set(code, {
+        code, name: name || '',
+        buyCount: 0, sellCount: 0,
+        buyAmount: 0, sellAmount: 0,
+        realizedCount: 0,
+        realizedPL: 0,    // 從已實現損益的「盈虧」加總
+        adjust: 0,
+        interest: 0,      // 融資利息（從已實現補上的）
+        shortFee: 0,      // 融券手續費
+        tradeInterest: 0, // 投資明細上所有與這檔有關的利息（含資轉現）
+        currentQty: 0,    // 目前持有股數（買-賣，含資轉現的轉換）
+        marketValue: 0,
+        cost: 0,
+        unrealizedPL: 0,
+        firstTradeDate: null,
+        lastTradeDate: null,
+        trades: [],
+        realizedItems: []
+      });
+    }
+    const s = stocks.get(code);
+    if (name && !s.name) s.name = name;
+    return s;
+  };
+
+  // 從投資明細統計
+  for (const t of (acc.trades || [])) {
+    if (!t.code) continue;
+    const s = ensure(t.code, t.name);
+    s.trades.push(t);
+    s.tradeInterest += (t.marginInterest || 0);
+
+    // 第一/最後交易日
+    if (!s.firstTradeDate || (t.date && t.date < s.firstTradeDate)) s.firstTradeDate = t.date;
+    if (!s.lastTradeDate || (t.date && t.date > s.lastTradeDate)) s.lastTradeDate = t.date;
+
+    // 資轉現：不算買賣次數，但會更新持股（融資轉現股，數量不變）
+    if (t.category === '資轉現' || t.action === '資轉現') {
+      // 不影響 currentQty（融資減一筆、現股加一筆，淨零）
+      continue;
+    }
+
+    if (t.action === '買') {
+      s.buyCount++;
+      s.buyAmount += (t.amount || 0);
+      s.currentQty += (t.qty || 0);
+    } else if (t.action === '賣') {
+      s.sellCount++;
+      s.sellAmount += (t.amount || 0);
+      s.currentQty -= (t.qty || 0);
+    }
+  }
+
+  // 從已實現損益統計
+  for (const r of (acc.realized || [])) {
+    if (!r.code) continue;
+    const s = ensure(r.code, r.name);
+    s.realizedCount++;
+    s.realizedPL += (r.pl || 0);
+    s.adjust += (r.adjust || 0);
+    s.interest += (r.interest || 0);
+    s.shortFee += (r.shortFee || 0);
+    s.realizedItems.push(r);
+  }
+
+  // 從未實現損益統計（持有市值/成本）
+  for (const x of (acc.unrealized || [])) {
+    if (!x.code) continue;
+    const s = ensure(x.code, x.name);
+    s.marketValue += (x.marketValue || 0);
+    s.cost += (x.cost || 0);
+    s.unrealizedPL += (x.pl || 0);
+  }
+
+  // 計算實際損益和平均報酬率
+  for (const s of stocks.values()) {
+    s.actualPL = s.realizedPL + s.adjust;
+    // 平均報酬率：累計實現損益 / 累計買進金額
+    s.avgRate = s.buyAmount > 0 ? (s.actualPL / s.buyAmount) * 100 : 0;
+    s.holding = s.currentQty > 0 || s.marketValue > 0;
+  }
+
+  return [...stocks.values()].sort((a, b) => {
+    // 持有中的優先，再按實際損益由大到小
+    if (a.holding !== b.holding) return a.holding ? -1 : 1;
+    return b.actualPL - a.actualPL;
+  });
+}
+
+const _expandedStocks = new Set();
+
+function renderStockAnalysis() {
+  const acc = getCurrentAccount();
+  const tb = document.querySelector('#stockTable tbody');
+  if (!acc) return;
+
+  const search = (document.getElementById('stockSearch')?.value || '').toLowerCase();
+  const filter = document.getElementById('stockFilter')?.value || 'all';
+
+  let stocks = buildStockAnalysis(acc);
+  // 篩選
+  stocks = stocks.filter(s => {
+    if (search && !(s.code.toLowerCase().includes(search) || (s.name||'').toLowerCase().includes(search))) return false;
+    if (filter === 'holding' && !s.holding) return false;
+    if (filter === 'closed' && s.holding) return false;
+    if (filter === 'profit' && s.actualPL <= 0) return false;
+    if (filter === 'loss' && s.actualPL >= 0) return false;
+    return true;
+  });
+
+  if (!stocks.length) {
+    tb.innerHTML = '<tr><td colspan="13" class="empty-state">沒有符合條件的股票</td></tr>';
+    return;
+  }
+
+  const rows = [];
+  for (const s of stocks) {
+    const expanded = _expandedStocks.has(s.code);
+    const holdingTag = s.holding ? `<span class="year-tag" style="background:var(--success-light);color:var(--success)">持有 ${fmt(s.currentQty)}</span>` : '';
+    rows.push(`
+      <tr class="month-row" data-code="${s.code}">
+        <td><span class="month-toggle ${expanded?'expanded':''}">▶</span></td>
+        <td><strong>${s.code}</strong></td>
+        <td>${s.name||''} ${holdingTag}</td>
+        <td>${s.buyCount}/${s.sellCount}</td>
+        <td>${s.realizedCount}</td>
+        <td>${s.holding ? fmt(s.currentQty) : '—'}</td>
+        <td>${fmt(s.buyAmount)}</td>
+        <td>${fmt(s.sellAmount)}</td>
+        <td class="${plClass(s.realizedPL)}">${fmt(s.realizedPL,{sign:true})}</td>
+        <td>${fmt(s.interest)}</td>
+        <td>${fmt(s.shortFee)}</td>
+        <td class="hl ${plClass(s.actualPL)}"><strong>${fmt(s.actualPL,{sign:true})}</strong></td>
+        <td class="${plClass(s.avgRate)}">${s.avgRate ? fmtPct(s.avgRate) : '—'}</td>
+      </tr>
+    `);
+    if (expanded) {
+      rows.push(`<tr class="month-detail-row"><td colspan="13">${renderStockDetail(s)}</td></tr>`);
+    }
+  }
+  tb.innerHTML = rows.join('');
+
+  tb.querySelectorAll('.month-row').forEach(row => {
+    row.onclick = () => {
+      const code = row.dataset.code;
+      if (_expandedStocks.has(code)) _expandedStocks.delete(code); else _expandedStocks.add(code);
+      renderStockAnalysis();
+    };
+  });
+}
+
+function renderStockDetail(s) {
+  const html = [];
+
+  // 該股已實現
+  if (s.realizedItems.length > 0) {
+    html.push('<div class="nested">');
+    html.push('<h4 style="padding:10px 14px 0">💰 已實現紀錄（' + s.realizedItems.length + ' 筆）</h4>');
+    html.push('<table class="loan-subtable"><thead><tr>');
+    html.push('<th>賣出日</th><th>買進日</th><th>類別</th><th>數量</th><th>賣價</th><th>買價</th><th>盈虧</th><th>利息</th><th>調整</th><th>實際</th>');
+    html.push('</tr></thead><tbody>');
+    for (const r of s.realizedItems) {
+      const actual = r.pl + (r.adjust || 0);
+      html.push(`<tr>
+        <td>${r.sellDate}</td>
+        <td>${r.buyDate||'—'}</td>
+        <td>${r.sellCategory||''}</td>
+        <td>${fmt(r.qty)}</td>
+        <td>${fmt(r.sellPrice,{decimals:2})}</td>
+        <td>${fmt(r.buyPrice,{decimals:2})}</td>
+        <td class="${plClass(r.pl)}">${fmt(r.pl,{sign:true})}</td>
+        <td>${fmt(r.interest||0)}</td>
+        <td class="${plClass(r.adjust||0)}">${(r.adjust||0)?fmt(r.adjust,{sign:true}):'—'}</td>
+        <td class="${plClass(actual)}"><strong>${fmt(actual,{sign:true})}</strong></td>
+      </tr>`);
+    }
+    html.push('</tbody></table></div>');
+  }
+
+  // 該股交易紀錄
+  if (s.trades.length > 0) {
+    html.push('<div class="nested">');
+    html.push('<h4 style="padding:10px 14px 0">📋 交易紀錄（' + s.trades.length + ' 筆）</h4>');
+    html.push('<table class="loan-subtable"><thead><tr>');
+    html.push('<th>日期</th><th>買賣</th><th>類別</th><th>數量</th><th>單價</th><th>價金</th><th>手續費</th><th>利息</th><th>備註</th>');
+    html.push('</tr></thead><tbody>');
+    for (const t of s.trades.slice().sort((a,b) => (a.date||'').localeCompare(b.date||''))) {
+      const isConv = (t.category === '資轉現' || t.action === '資轉現');
+      const noteCell = isConv ? (t.note || '資轉現') : '';
+      html.push(`<tr ${isConv?'style="background:var(--primary-light)"':''}>
+        <td>${t.date}</td>
+        <td>${t.action||''}</td>
+        <td>${t.category||''}</td>
+        <td>${fmt(t.qty)}</td>
+        <td>${fmt(t.price,{decimals:2})}</td>
+        <td>${fmt(t.amount)}</td>
+        <td>${fmt(t.fee)}</td>
+        <td>${fmt(t.marginInterest||0)}</td>
+        <td>${noteCell}</td>
+      </tr>`);
+    }
+    html.push('</tbody></table></div>');
+  }
+
+  // 持有中市值
+  if (s.holding) {
+    html.push('<div class="nested" style="padding:14px">');
+    html.push(`<h4>📦 目前持有</h4>`);
+    html.push(`<p style="margin:6px 0;color:var(--text-dim)">數量 ${fmt(s.currentQty)} 股　|　市值 ${fmt(s.marketValue)}　|　成本 ${fmt(s.cost)}　|　未實現損益 <span class="${plClass(s.unrealizedPL)}"><strong>${fmt(s.unrealizedPL,{sign:true})}</strong></span></p>`);
+    html.push('</div>');
+  }
+
+  if (html.length === 0) html.push('<div class="empty-state">該股無細項資料</div>');
+  return html.join('');
+}
+
+function exportStocksExcel() {
+  const acc = getCurrentAccount();
+  if (!acc) return toast('請先選擇帳戶', 'err');
+  const stocks = buildStockAnalysis(acc);
+  if (!stocks.length) return toast('沒有資料可匯出', 'err');
+
+  const headers = ['代號','名稱','持有中股數','進出次數','已實現次數',
+                   '累計買進','累計賣出','累計實現損益','調整金額','累計利息',
+                   '累計融券費','實際損益','平均報酬率(%)','市值','成本','未實現損益'];
+  const rows = stocks.map(s => [
+    s.code, s.name, s.currentQty,
+    `${s.buyCount}/${s.sellCount}`, s.realizedCount,
+    s.buyAmount, s.sellAmount, s.realizedPL, s.adjust, s.interest,
+    s.shortFee, s.actualPL, s.avgRate.toFixed(2),
+    s.marketValue, s.cost, s.unrealizedPL
+  ]);
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '個股損益分析');
+  const ts = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `個股損益_${acc.name}_${ts}.xlsx`);
+  toast('已匯出 Excel', 'ok');
+}
+
 // ============================================================
-// 股票借款
+// 資轉現
 // ============================================================
+
+// 計算「目前還未賣出的融資買進」清單
+function getOpenMarginBuys(acc) {
+  // 把每筆融資買進記下尚未配對的剩餘數量
+  // 用「先進先出」配對掉融資賣出和資轉現
+  const buys = []; // {trade, remainingQty}
+  const trades = (acc.trades || []).slice().sort((a,b) => (a.date||'').localeCompare(b.date||''));
+
+  for (const t of trades) {
+    if (t.category === '融資' && t.action === '買') {
+      buys.push({ trade: t, remainingQty: t.qty || 0 });
+    } else if (t.category === '融資' && t.action === '賣') {
+      // 從最早的融資買進開始扣
+      let need = t.qty || 0;
+      for (const b of buys) {
+        if (need <= 0) break;
+        if (b.remainingQty <= 0) continue;
+        if (b.trade.code !== t.code) continue;
+        const used = Math.min(b.remainingQty, need);
+        b.remainingQty -= used;
+        need -= used;
+      }
+    } else if ((t.category === '資轉現' || t.action === '資轉現') && t._convertedFromMarginBuy) {
+      // 從指定的融資買進扣掉
+      let need = t.qty || 0;
+      for (const b of buys) {
+        if (need <= 0) break;
+        if (b.remainingQty <= 0) continue;
+        if (b.trade.code !== t.code) continue;
+        // 嚴格比對：資轉現紀錄會帶 _convertedFromMarginBuy = trade key
+        if (tradeKey(b.trade) !== t._convertedFromMarginBuy) continue;
+        const used = Math.min(b.remainingQty, need);
+        b.remainingQty -= used;
+        need -= used;
+      }
+    }
+  }
+
+  return buys.filter(b => b.remainingQty > 0);
+}
+
+function tradeKey(t) {
+  return `${t.date}|${t.code}|${t.action}|${t.category}|${t.qty}|${t.price}`;
+}
+
+async function showConvertToCashDialog() {
+  const acc = getCurrentAccount();
+  if (!acc) return toast('請先選擇帳戶', 'err');
+
+  const open = getOpenMarginBuys(acc);
+  if (!open.length) {
+    return toast('目前沒有未平倉的融資買進可轉現', 'err');
+  }
+
+  const today = todayStr().replace(/\//g, '-');
+  const optionsHtml = open.map((b, i) => {
+    const t = b.trade;
+    return `<option value="${i}">${t.date}　${t.code} ${t.name||''}　${fmt(b.remainingQty)}股 @${fmt(t.price,{decimals:2})}　成本約 ${fmt(b.remainingQty * t.price)}</option>`;
+  }).join('');
+
+  const result = await showModal({
+    title: '🔄 新增資轉現',
+    html: `
+      <div style="display:grid;gap:10px;min-width:480px">
+        <label>從哪筆融資買進轉？
+          <select id="cv-source" style="width:100%">${optionsHtml}</select>
+        </label>
+        <label>資轉現日期
+          <input type="date" id="cv-date" value="${today}" style="width:100%">
+        </label>
+        <label>結清融資利息（券商計算）
+          <input type="number" id="cv-interest" placeholder="例：320" style="width:100%">
+        </label>
+        <label>備註
+          <input type="text" id="cv-note" placeholder="可不填" style="width:100%">
+        </label>
+        <p class="hint" style="margin:0;font-size:12px">系統會自動產生兩筆紀錄：「融資結清」+「現股建倉」（成本沿用原融資買進）</p>
+      </div>
+    `,
+    onConfirm: (body) => ({
+      sourceIdx: parseInt(body.querySelector('#cv-source').value, 10),
+      date: body.querySelector('#cv-date').value,
+      interest: parseFloat(body.querySelector('#cv-interest').value) || 0,
+      note: body.querySelector('#cv-note').value.trim()
+    })
+  });
+  if (!result) return;
+
+  const src = open[result.sourceIdx];
+  if (!src) return toast('來源無效', 'err');
+
+  const sourceTrade = src.trade;
+  const qty = src.remainingQty; // 全數轉現（如果你想部分轉，未來再加數量輸入）
+  const date = Parsers.formatDate(result.date);
+  const sourceKey = tradeKey(sourceTrade);
+
+  // 產生「資轉現-融資結清」紀錄
+  const closeRec = {
+    date,
+    code: sourceTrade.code,
+    name: sourceTrade.name,
+    kind: '整股',
+    action: '資轉現',
+    category: '資轉現',
+    rawCategory: '資轉現-融資結清',
+    qty,
+    price: sourceTrade.price,
+    amount: qty * sourceTrade.price,
+    fee: 0,
+    tax: 0,
+    receivable: 0,
+    marginAmount: sourceTrade.marginAmount || 0,
+    ownFund: 0,
+    marginInterest: result.interest,  // 結清利息
+    shortFee: 0,
+    borrowFee: 0,
+    interestTax: 0,
+    nhi: 0,
+    pl: 0,
+    settleDate: '',
+    currency: sourceTrade.currency || '新台幣',
+    note: result.note ? `資轉現-融資結清｜${result.note}` : '資轉現-融資結清',
+    _convertedFromMarginBuy: sourceKey,  // 連結到原融資買進
+    _convertId: 'CV-' + Date.now()
+  };
+
+  // 產生「資轉現-現股建倉」紀錄
+  const openCashRec = {
+    date,
+    code: sourceTrade.code,
+    name: sourceTrade.name,
+    kind: '整股',
+    action: '資轉現',
+    category: '資轉現',
+    rawCategory: '資轉現-現股建倉',
+    qty,
+    price: sourceTrade.price,  // 沿用原融資買進的單價
+    amount: qty * sourceTrade.price,
+    fee: 0,
+    tax: 0,
+    receivable: 0,
+    marginAmount: 0,
+    ownFund: 0,
+    marginInterest: 0,
+    shortFee: 0,
+    borrowFee: 0,
+    interestTax: 0,
+    nhi: 0,
+    pl: 0,
+    settleDate: '',
+    currency: sourceTrade.currency || '新台幣',
+    note: result.note ? `資轉現-現股建倉｜${result.note}` : '資轉現-現股建倉',
+    _convertedFromMarginBuy: sourceKey,
+    _convertId: closeRec._convertId
+  };
+
+  acc.trades.push(closeRec);
+  acc.trades.push(openCashRec);
+  acc.trades.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+
+  save();
+  renderAll();
+  toast(`資轉現已登記：${sourceTrade.code} ${sourceTrade.name||''} ${fmt(qty)}股`, 'ok');
+}
+
+
 
 function loanGenId(acc) {
   const existing = (acc.loans || []).map(l => l.id);
@@ -1382,7 +1802,7 @@ function renderTrades() {
   const acc = getCurrentAccount();
   const tb = document.querySelector('#tradesTable tbody');
   if (!acc || !acc.trades.length) {
-    tb.innerHTML = '<tr><td colspan="16" class="empty-state">尚無投資明細</td></tr>';
+    tb.innerHTML = '<tr><td colspan="17" class="empty-state">尚無投資明細</td></tr>';
     return;
   }
   const search = (document.getElementById('trSearch').value || '').toLowerCase();
@@ -1396,13 +1816,20 @@ function renderTrades() {
     return true;
   });
 
-  tb.innerHTML = filtered.map(t => `
-    <tr>
+  tb.innerHTML = filtered.map((t, i) => {
+    const isConv = (t.category === '資轉現' || t.action === '資轉現');
+    const rowStyle = isConv ? 'style="background:rgba(37,99,235,0.06)"' : '';
+    const delBtn = isConv && t._convertId
+      ? `<button class="btn-mini danger" data-act="del-conv" data-cvid="${t._convertId}" style="padding:2px 6px;font-size:11px">刪</button>`
+      : '';
+    const noteCell = t.note ? `<span style="color:var(--primary-dark);font-size:12px">${t.note}</span>` : '';
+    return `
+    <tr ${rowStyle}>
       <td>${t.date}</td>
       <td>${t.code}</td>
-      <td>${t.name}</td>
-      <td>${t.action}</td>
-      <td>${t.category}</td>
+      <td>${t.name||''}</td>
+      <td>${t.action||''}</td>
+      <td>${isConv ? `<span class="year-tag" style="background:var(--primary-light);color:var(--primary-dark)">${t.rawCategory||t.category}</span>` : (t.category||'')}</td>
       <td>${fmt(t.qty)}</td>
       <td>${fmt(t.price, {decimals:2})}</td>
       <td>${fmt(t.amount)}</td>
@@ -1413,9 +1840,25 @@ function renderTrades() {
       <td class="${t.shortFee ? 'hl' : ''}">${fmt(t.shortFee)}</td>
       <td>${fmt(t.receivable)}</td>
       <td class="${plClass(t.pl)}">${fmt(t.pl, {sign:true})}</td>
-      <td>${t.settleDate || '—'}</td>
+      <td>${t.settleDate || noteCell || '—'}</td>
+      <td>${delBtn}</td>
     </tr>
-  `).join('') || '<tr><td colspan="16" class="empty-state">沒有符合條件的資料</td></tr>';
+    `;
+  }).join('') || '<tr><td colspan="17" class="empty-state">沒有符合條件的資料</td></tr>';
+
+  // 刪除資轉現按鈕
+  tb.querySelectorAll('button[data-act="del-conv"]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const cvid = btn.dataset.cvid;
+      const ok = await confirmDialog('刪除資轉現紀錄', '會同時刪除「融資結清」與「現股建倉」兩筆紀錄。確定？');
+      if (!ok) return;
+      acc.trades = acc.trades.filter(t => t._convertId !== cvid);
+      save();
+      renderAll();
+      toast('已刪除資轉現紀錄', 'ok');
+    };
+  });
 }
 
 // ============================================================
@@ -1473,6 +1916,14 @@ function bindEvents() {
   // 每月損益
   document.getElementById('monthlyYear').onchange = renderMonthly;
   document.getElementById('btnExportMonthly').onclick = exportMonthlyExcel;
+
+  // 個股損益分析
+  document.getElementById('stockSearch').oninput = renderStockAnalysis;
+  document.getElementById('stockFilter').onchange = renderStockAnalysis;
+  document.getElementById('btnExportStocks').onclick = exportStocksExcel;
+
+  // 資轉現
+  document.getElementById('btnConvertToCash').onclick = showConvertToCashDialog;
 
   // 借款
   document.getElementById('btnAddLoan').onclick = addLoan;

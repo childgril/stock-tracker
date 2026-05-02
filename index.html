@@ -120,6 +120,40 @@
       <tbody></tbody>
     </table>
   </div>
+
+  <h3 style="margin-top:30px">個股損益分析</h3>
+  <p class="hint">每檔股票的進出統計。點代號可展開該股所有交易紀錄</p>
+  <div class="table-toolbar">
+    <input type="text" id="stockSearch" placeholder="🔍 搜尋代號或名稱…">
+    <select id="stockFilter">
+      <option value="all">全部</option>
+      <option value="holding">持有中</option>
+      <option value="closed">已出清</option>
+      <option value="profit">獲利</option>
+      <option value="loss">虧損</option>
+    </select>
+    <button class="btn-mini" id="btnExportStocks">📊 匯出 Excel</button>
+  </div>
+  <div class="table-scroll">
+    <table class="data-table" id="stockTable">
+      <thead><tr>
+        <th></th>
+        <th>代號</th>
+        <th>名稱</th>
+        <th>進出次數</th>
+        <th>已實現次數</th>
+        <th>持有中</th>
+        <th>累計買進</th>
+        <th>累計賣出</th>
+        <th>累計實現損益</th>
+        <th>累計利息</th>
+        <th>累計融券費</th>
+        <th>實際損益</th>
+        <th>平均報酬率</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
 </section>
 
 <!-- =================== 已實現損益 =================== -->
@@ -201,12 +235,15 @@
       <option value="現股">現股</option>
       <option value="融資">融資</option>
       <option value="融券">融券</option>
+      <option value="資轉現">資轉現</option>
     </select>
     <select id="trFilterAction">
       <option value="">買賣</option>
       <option value="買">買</option>
       <option value="賣">賣</option>
+      <option value="資轉現">資轉現</option>
     </select>
+    <button class="btn-mini primary" id="btnConvertToCash">🔄 新增資轉現</button>
   </div>
   <div class="table-scroll">
     <table class="data-table" id="tradesTable">
@@ -217,7 +254,8 @@
         <th>手續費</th><th>交易稅</th>
         <th>融資金額/保證金</th>
         <th>融資券利息</th><th>融券手續費</th>
-        <th>應收付款</th><th>損益</th><th>交割日</th>
+        <th>應收付款</th><th>損益</th><th>交割日/備註</th>
+        <th></th>
       </tr></thead>
       <tbody></tbody>
     </table>
