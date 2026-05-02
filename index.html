@@ -96,7 +96,7 @@
   <div id="acDataStatus"></div>
 
   <h3>每月損益彙總</h3>
-  <p class="hint">點月份可展開查看該月已實現損益細項與所有交易</p>
+  <p class="hint">點月份可展開查看該月已實現損益細項</p>
   <div class="table-toolbar">
     <select id="monthlyYear">
       <option value="">所有年份</option>
@@ -116,6 +116,36 @@
         <th>實際損益</th>
         <th>交易筆數</th>
         <th>總成交金額</th>
+        <th class="hl">當沖筆數</th>
+        <th class="hl">當沖損益</th>
+        <th class="hl">當沖勝率</th>
+        <th class="hl">當沖報酬率</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:30px">每日當沖分析</h3>
+  <p class="hint">同一交易日同一檔股票有買有賣的部位視為當沖。點日期可展開該日當沖明細</p>
+  <div class="summary-grid small" id="dayTradeCards"></div>
+  <div class="table-toolbar">
+    <select id="dayTradeYear">
+      <option value="">所有年份</option>
+    </select>
+    <button class="btn-mini" id="btnExportDayTrades">📊 匯出 Excel</button>
+  </div>
+  <div class="table-scroll">
+    <table class="data-table" id="dayTradeTable">
+      <thead><tr>
+        <th></th>
+        <th>日期</th>
+        <th>當沖檔數</th>
+        <th>當沖股數</th>
+        <th>成交金額（雙邊）</th>
+        <th>當沖損益</th>
+        <th>勝/敗</th>
+        <th>勝率</th>
+        <th>報酬率</th>
       </tr></thead>
       <tbody></tbody>
     </table>
@@ -155,6 +185,9 @@
         <th>累計融券費</th>
         <th>實際損益</th>
         <th>平均報酬率</th>
+        <th class="hl">當沖筆數</th>
+        <th class="hl">當沖損益</th>
+        <th class="hl">當沖勝率</th>
       </tr></thead>
       <tbody></tbody>
     </table>

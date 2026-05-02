@@ -656,6 +656,7 @@ function renderAccount() {
   status.innerHTML = lines.join('');
 
   renderMonthly();
+  renderDayTrades();
   renderStockAnalysis();
 }
 
@@ -737,6 +738,9 @@ function renderMonthly() {
   if (!acc) return;
 
   const data = buildMonthlyData(acc);
+  // 算當沖（按月匯總）
+  const dayTrades = analyzeDayTrades(acc);
+  const dtByMonth = aggregateDayTradesByMonth(dayTrades);
 
   // 年份下拉
   const years = [...new Set(data.map(m => m.key.slice(0,4)))].sort().reverse();
@@ -747,7 +751,7 @@ function renderMonthly() {
   const filtered = currentYear ? data.filter(m => m.key.startsWith(currentYear)) : data;
 
   if (!filtered.length) {
-    tb.innerHTML = '<tr><td colspan="10" class="empty-state">尚無資料（請先匯入已實現損益或投資明細）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="14" class="empty-state">尚無資料（請先匯入已實現損益或投資明細）</td></tr>';
     return;
   }
 
@@ -755,6 +759,7 @@ function renderMonthly() {
   for (const m of filtered) {
     const expanded = _expandedMonths.has(m.key);
     const [year, month] = m.key.split('-');
+    const dt = dtByMonth.get(m.key);
     rows.push(`
       <tr class="month-row" data-month="${m.key}">
         <td><span class="month-toggle ${expanded?'expanded':''}">▶</span></td>
@@ -767,10 +772,14 @@ function renderMonthly() {
         <td class="hl ${plClass(m.actual)}">${fmt(m.actual,{sign:true})}</td>
         <td>${m.tradeCount}</td>
         <td>${fmt(m.tradeAmount)}</td>
+        <td class="hl">${dt ? dt.count : '—'}</td>
+        <td class="hl ${dt?plClass(dt.netPL):''}">${dt ? fmt(dt.netPL,{sign:true}) : '—'}</td>
+        <td class="hl ${dt && dt.winRate>=50 ? 'pos' : (dt && dt.winRate<50 ? 'neg' : '')}">${dt ? dt.winRate.toFixed(1)+'%' : '—'}</td>
+        <td class="hl ${dt?plClass(dt.rate):''}">${dt ? fmtPct(dt.rate) : '—'}</td>
       </tr>
     `);
     if (expanded) {
-      rows.push(`<tr class="month-detail-row"><td colspan="10">${renderMonthDetail(m)}</td></tr>`);
+      rows.push(`<tr class="month-detail-row"><td colspan="14">${renderMonthDetail(m)}</td></tr>`);
     }
   }
   tb.innerHTML = rows.join('');
@@ -813,29 +822,6 @@ function renderMonthDetail(m) {
     html.push('</tbody></table></div>');
   }
 
-  // 該月投資明細（交易紀錄）
-  if (m.tradeItems.length > 0) {
-    html.push('<div class="nested">');
-    html.push('<h4 style="padding:10px 14px 0">📋 投資明細（' + m.tradeItems.length + ' 筆）</h4>');
-    html.push('<table class="loan-subtable"><thead><tr>');
-    html.push('<th>日期</th><th>代號</th><th>名稱</th><th>買賣</th><th>類別</th><th>數量</th><th>單價</th><th>價金</th><th>手續費</th><th>交易稅</th><th>利息</th><th>損益</th>');
-    html.push('</tr></thead><tbody>');
-    for (const t of m.tradeItems) {
-      html.push(`<tr>
-        <td>${t.date}</td><td>${t.code}</td><td>${t.name||''}</td>
-        <td>${t.action||''}</td><td>${t.category||''}</td>
-        <td>${fmt(t.qty)}</td>
-        <td>${fmt(t.price,{decimals:2})}</td>
-        <td>${fmt(t.amount)}</td>
-        <td>${fmt(t.fee)}</td>
-        <td>${fmt(t.tax)}</td>
-        <td>${fmt(t.marginInterest||0)}</td>
-        <td class="${plClass(t.pl||0)}">${(t.pl||0)?fmt(t.pl,{sign:true}):'—'}</td>
-      </tr>`);
-    }
-    html.push('</tbody></table></div>');
-  }
-
   // 該月借款利息支付
   const loanPayments = [];
   for (const l of (getCurrentAccount().loans || [])) {
@@ -872,12 +858,23 @@ function exportMonthlyExcel() {
   const data = buildMonthlyData(acc);
   if (!data.length) return toast('沒有資料可匯出', 'err');
 
-  const headers = ['月份','已實現損益','融資利息','融券手續費','借款利息','調整金額','實際損益','交易筆數','總成交金額'];
-  const rows = data.map(m => [
-    m.key, m.realizedPL, m.interest, m.shortFee,
-    m.loanInterest, m.adjust, m.actual,
-    m.tradeCount, m.tradeAmount
-  ]);
+  const dayTrades = analyzeDayTrades(acc);
+  const dtByMonth = aggregateDayTradesByMonth(dayTrades);
+
+  const headers = ['月份','已實現損益','融資利息','融券手續費','借款利息','調整金額','實際損益','交易筆數','總成交金額',
+                   '當沖筆數','當沖損益','當沖勝率(%)','當沖報酬率(%)'];
+  const rows = data.map(m => {
+    const dt = dtByMonth.get(m.key);
+    return [
+      m.key, m.realizedPL, m.interest, m.shortFee,
+      m.loanInterest, m.adjust, m.actual,
+      m.tradeCount, m.tradeAmount,
+      dt ? dt.count : 0,
+      dt ? dt.netPL : 0,
+      dt ? +dt.winRate.toFixed(2) : 0,
+      dt ? +dt.rate.toFixed(2) : 0
+    ];
+  });
   const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '每月損益');
@@ -1030,7 +1027,313 @@ function renderUnrealized() {
   });
 }
 
-// ---------- 個股損益分析 ----------
+// ============================================================
+// 當沖分析
+// 規則：同一交易日 + 同一股票，買賣配對的數量視為當沖
+// 例：當天買 1500 股 + 賣 1000 股 → 當沖 1000 股
+// ============================================================
+function analyzeDayTrades(acc) {
+  // 1. 把投資明細按 (日期, 代號) 分組
+  const groups = new Map();
+  for (const t of (acc.trades || [])) {
+    if (!t.date || !t.code) continue;
+    if (t.category === '資轉現' || t.action === '資轉現') continue; // 資轉現不算
+    const k = `${t.date}|${t.code}`;
+    if (!groups.has(k)) groups.set(k, { date: t.date, code: t.code, name: t.name, buys: [], sells: [] });
+    const g = groups.get(k);
+    if (t.action === '買') g.buys.push(t);
+    else if (t.action === '賣') g.sells.push(t);
+  }
+
+  // 2. 算每組的當沖配對
+  const dayTrades = []; // 每筆當沖（一檔股票的某天當沖明細）
+  for (const g of groups.values()) {
+    if (g.buys.length === 0 || g.sells.length === 0) continue;
+    const buyQty = g.buys.reduce((s,t) => s + (t.qty || 0), 0);
+    const sellQty = g.sells.reduce((s,t) => s + (t.qty || 0), 0);
+    const matchQty = Math.min(buyQty, sellQty); // 當沖配對股數
+    if (matchQty <= 0) continue;
+
+    // 加權平均價
+    const buyAmount = g.buys.reduce((s,t) => s + (t.amount || 0), 0);
+    const sellAmount = g.sells.reduce((s,t) => s + (t.amount || 0), 0);
+    const avgBuyPrice = buyQty > 0 ? buyAmount / buyQty : 0;
+    const avgSellPrice = sellQty > 0 ? sellAmount / sellQty : 0;
+
+    // 當沖損益 = (賣價 - 買價) × 配對股數 - 該日的手續費和稅
+    const grossPL = (avgSellPrice - avgBuyPrice) * matchQty;
+    const buyFee = g.buys.reduce((s,t) => s + (t.fee || 0), 0);
+    const sellFee = g.sells.reduce((s,t) => s + (t.fee || 0), 0);
+    const sellTax = g.sells.reduce((s,t) => s + (t.tax || 0), 0);
+    // 手續費按配對比例分攤
+    const buyFeeRatio = buyQty > 0 ? matchQty / buyQty : 0;
+    const sellFeeRatio = sellQty > 0 ? matchQty / sellQty : 0;
+    const allocFee = buyFee * buyFeeRatio + sellFee * sellFeeRatio;
+    const allocTax = sellTax * sellFeeRatio;
+
+    const netPL = grossPL - allocFee - allocTax;
+    const turnover = avgBuyPrice * matchQty + avgSellPrice * matchQty; // 雙邊成交金額
+    const buySideAmount = avgBuyPrice * matchQty; // 用買進金額算報酬率
+
+    dayTrades.push({
+      date: g.date,
+      code: g.code,
+      name: g.name || '',
+      matchQty,
+      avgBuyPrice,
+      avgSellPrice,
+      buyAmount: buySideAmount,
+      sellAmount: avgSellPrice * matchQty,
+      turnover,
+      grossPL,
+      fee: allocFee,
+      tax: allocTax,
+      netPL,
+      rate: buySideAmount > 0 ? (netPL / buySideAmount) * 100 : 0,
+      buyCount: g.buys.length,
+      sellCount: g.sells.length
+    });
+  }
+
+  return dayTrades.sort((a,b) => b.date.localeCompare(a.date));
+}
+
+// 按日期匯總當沖（每天一行）
+function aggregateDayTradesByDay(dayTrades) {
+  const byDate = new Map();
+  for (const dt of dayTrades) {
+    if (!byDate.has(dt.date)) {
+      byDate.set(dt.date, {
+        date: dt.date, count: 0, totalQty: 0,
+        turnover: 0, buyAmount: 0,
+        netPL: 0, fee: 0, tax: 0,
+        winCount: 0, lossCount: 0,
+        items: []
+      });
+    }
+    const d = byDate.get(dt.date);
+    d.count++;
+    d.totalQty += dt.matchQty;
+    d.turnover += dt.turnover;
+    d.buyAmount += dt.buyAmount;
+    d.netPL += dt.netPL;
+    d.fee += dt.fee;
+    d.tax += dt.tax;
+    if (dt.netPL > 0) d.winCount++;
+    else if (dt.netPL < 0) d.lossCount++;
+    d.items.push(dt);
+  }
+  // 算每天的勝率/報酬率
+  for (const d of byDate.values()) {
+    d.winRate = d.count > 0 ? (d.winCount / d.count) * 100 : 0;
+    d.rate = d.buyAmount > 0 ? (d.netPL / d.buyAmount) * 100 : 0;
+  }
+  return [...byDate.values()].sort((a,b) => b.date.localeCompare(a.date));
+}
+
+// 把當沖按月份匯總（給每月損益表用）
+function aggregateDayTradesByMonth(dayTrades) {
+  const byMonth = new Map();
+  for (const dt of dayTrades) {
+    const k = getMonthKey(dt.date);
+    if (!k) continue;
+    if (!byMonth.has(k)) {
+      byMonth.set(k, { count: 0, turnover: 0, buyAmount: 0, netPL: 0, winCount: 0 });
+    }
+    const m = byMonth.get(k);
+    m.count++;
+    m.turnover += dt.turnover;
+    m.buyAmount += dt.buyAmount;
+    m.netPL += dt.netPL;
+    if (dt.netPL > 0) m.winCount++;
+  }
+  for (const m of byMonth.values()) {
+    m.winRate = m.count > 0 ? (m.winCount / m.count) * 100 : 0;
+    m.rate = m.buyAmount > 0 ? (m.netPL / m.buyAmount) * 100 : 0;
+  }
+  return byMonth;
+}
+
+// 把當沖按股票代號匯總（給個股分析用）
+function aggregateDayTradesByCode(dayTrades) {
+  const byCode = new Map();
+  for (const dt of dayTrades) {
+    if (!byCode.has(dt.code)) {
+      byCode.set(dt.code, { count: 0, turnover: 0, buyAmount: 0, netPL: 0, winCount: 0 });
+    }
+    const s = byCode.get(dt.code);
+    s.count++;
+    s.turnover += dt.turnover;
+    s.buyAmount += dt.buyAmount;
+    s.netPL += dt.netPL;
+    if (dt.netPL > 0) s.winCount++;
+  }
+  for (const s of byCode.values()) {
+    s.winRate = s.count > 0 ? (s.winCount / s.count) * 100 : 0;
+    s.rate = s.buyAmount > 0 ? (s.netPL / s.buyAmount) * 100 : 0;
+  }
+  return byCode;
+}
+
+// ---------- 每日當沖渲染 ----------
+const _expandedDays = new Set();
+
+function renderDayTradeCards(dayTrades) {
+  const wrap = document.getElementById('dayTradeCards');
+  if (!wrap) return;
+  if (!dayTrades || !dayTrades.length) {
+    wrap.innerHTML = '';
+    return;
+  }
+  const days = aggregateDayTradesByDay(dayTrades);
+  const totalCount = dayTrades.length;
+  const totalDays = days.length;
+  const totalNetPL = dayTrades.reduce((s, x) => s + x.netPL, 0);
+  const totalBuyAmount = dayTrades.reduce((s, x) => s + x.buyAmount, 0);
+  const totalTurnover = dayTrades.reduce((s, x) => s + x.turnover, 0);
+  const winCount = dayTrades.filter(x => x.netPL > 0).length;
+  const winRate = totalCount > 0 ? (winCount / totalCount) * 100 : 0;
+  const avgRate = totalBuyAmount > 0 ? (totalNetPL / totalBuyAmount) * 100 : 0;
+  const profitDay = days.filter(d => d.netPL > 0).length;
+  const lossDay = days.filter(d => d.netPL < 0).length;
+  const dayWinRate = totalDays > 0 ? (profitDay / totalDays) * 100 : 0;
+
+  const cards = [
+    `<div class="card"><div class="label">當沖總筆數</div><div class="value">${totalCount}</div><div style="font-size:11px;color:var(--text-muted);margin-top:2px">共 ${totalDays} 個交易日</div></div>`,
+    `<div class="card"><div class="label">當沖總損益</div><div class="value ${plClass(totalNetPL)}">${fmt(totalNetPL,{sign:true})}</div></div>`,
+    `<div class="card"><div class="label">總成交金額（雙邊）</div><div class="value">${fmt(totalTurnover)}</div></div>`,
+    `<div class="card"><div class="label">當沖勝率</div><div class="value ${winRate>=50?'pos':'neg'}">${winRate.toFixed(1)}%</div><div style="font-size:11px;color:var(--text-muted);margin-top:2px">${winCount}/${totalCount} 筆獲利</div></div>`,
+    `<div class="card"><div class="label">日勝率</div><div class="value ${dayWinRate>=50?'pos':'neg'}">${dayWinRate.toFixed(1)}%</div><div style="font-size:11px;color:var(--text-muted);margin-top:2px">${profitDay} 賺 / ${lossDay} 賠</div></div>`,
+    `<div class="card"><div class="label">總報酬率</div><div class="value ${plClass(avgRate)}">${fmtPct(avgRate)}</div><div style="font-size:11px;color:var(--text-muted);margin-top:2px">損益÷買進金額</div></div>`
+  ];
+  wrap.innerHTML = cards.join('');
+}
+
+function renderDayTrades() {
+  const acc = getCurrentAccount();
+  const tb = document.querySelector('#dayTradeTable tbody');
+  const yearSel = document.getElementById('dayTradeYear');
+  if (!tb) return;
+
+  if (!acc) {
+    tb.innerHTML = '<tr><td colspan="9" class="empty-state">尚未選擇帳戶</td></tr>';
+    renderDayTradeCards(null);
+    return;
+  }
+
+  const allDayTrades = analyzeDayTrades(acc);
+  if (!allDayTrades.length) {
+    tb.innerHTML = '<tr><td colspan="9" class="empty-state">沒有當沖紀錄（同一日同一股票需有買有賣才算當沖）</td></tr>';
+    renderDayTradeCards(null);
+    return;
+  }
+
+  // 年份下拉
+  const years = [...new Set(allDayTrades.map(d => d.date.slice(0,4)))].sort().reverse();
+  const currentYear = yearSel.value;
+  yearSel.innerHTML = '<option value="">所有年份</option>' +
+    years.map(y => `<option value="${y}" ${y===currentYear?'selected':''}>${y}</option>`).join('');
+
+  const filtered = currentYear
+    ? allDayTrades.filter(d => d.date.startsWith(currentYear))
+    : allDayTrades;
+
+  renderDayTradeCards(filtered);
+
+  if (!filtered.length) {
+    tb.innerHTML = '<tr><td colspan="9" class="empty-state">該年份無當沖紀錄</td></tr>';
+    return;
+  }
+
+  const days = aggregateDayTradesByDay(filtered);
+
+  const rows = [];
+  for (const d of days) {
+    const expanded = _expandedDays.has(d.date);
+    rows.push(`
+      <tr class="month-row" data-date="${d.date}">
+        <td><span class="month-toggle ${expanded?'expanded':''}">▶</span></td>
+        <td><strong>${d.date}</strong></td>
+        <td>${d.count}</td>
+        <td>${fmt(d.totalQty)}</td>
+        <td>${fmt(d.turnover)}</td>
+        <td class="${plClass(d.netPL)}"><strong>${fmt(d.netPL,{sign:true})}</strong></td>
+        <td><span class="pos">${d.winCount}</span> / <span class="neg">${d.lossCount}</span></td>
+        <td class="${d.winRate>=50?'pos':'neg'}">${d.winRate.toFixed(1)}%</td>
+        <td class="${plClass(d.rate)}">${fmtPct(d.rate)}</td>
+      </tr>
+    `);
+    if (expanded) {
+      rows.push(`<tr class="month-detail-row"><td colspan="9">${renderDayTradeDetail(d)}</td></tr>`);
+    }
+  }
+  tb.innerHTML = rows.join('');
+
+  tb.querySelectorAll('.month-row').forEach(row => {
+    row.onclick = () => {
+      const k = row.dataset.date;
+      if (_expandedDays.has(k)) _expandedDays.delete(k); else _expandedDays.add(k);
+      renderDayTrades();
+    };
+  });
+}
+
+function renderDayTradeDetail(d) {
+  const html = ['<div class="nested">'];
+  html.push('<h4 style="padding:10px 14px 0">當日當沖明細（' + d.items.length + ' 檔）</h4>');
+  html.push('<table class="loan-subtable"><thead><tr>');
+  html.push('<th>代號</th><th>名稱</th><th>當沖股數</th><th>平均買價</th><th>平均賣價</th><th>毛損益</th><th>手續費+稅</th><th>淨損益</th><th>報酬率</th>');
+  html.push('</tr></thead><tbody>');
+  for (const dt of d.items) {
+    html.push(`<tr>
+      <td>${dt.code}</td>
+      <td>${dt.name}</td>
+      <td>${fmt(dt.matchQty)}</td>
+      <td>${fmt(dt.avgBuyPrice,{decimals:2})}</td>
+      <td>${fmt(dt.avgSellPrice,{decimals:2})}</td>
+      <td class="${plClass(dt.grossPL)}">${fmt(dt.grossPL,{sign:true})}</td>
+      <td>${fmt(dt.fee + dt.tax)}</td>
+      <td class="${plClass(dt.netPL)}"><strong>${fmt(dt.netPL,{sign:true})}</strong></td>
+      <td class="${plClass(dt.rate)}">${fmtPct(dt.rate)}</td>
+    </tr>`);
+  }
+  html.push('</tbody></table></div>');
+  return html.join('');
+}
+
+function exportDayTradesExcel() {
+  const acc = getCurrentAccount();
+  if (!acc) return toast('請先選擇帳戶', 'err');
+  const dayTrades = analyzeDayTrades(acc);
+  if (!dayTrades.length) return toast('沒有當沖紀錄可匯出', 'err');
+
+  const wb = XLSX.utils.book_new();
+
+  const h1 = ['日期','代號','名稱','當沖股數','平均買價','平均賣價','買進金額','賣出金額','雙邊成交','毛損益','手續費','交易稅','淨損益','報酬率(%)'];
+  const r1 = dayTrades.map(d => [
+    d.date, d.code, d.name, d.matchQty,
+    +d.avgBuyPrice.toFixed(2), +d.avgSellPrice.toFixed(2),
+    Math.round(d.buyAmount), Math.round(d.sellAmount), Math.round(d.turnover),
+    Math.round(d.grossPL), Math.round(d.fee), Math.round(d.tax), Math.round(d.netPL),
+    +d.rate.toFixed(2)
+  ]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([h1, ...r1]), '每筆當沖');
+
+  const days = aggregateDayTradesByDay(dayTrades);
+  const h2 = ['日期','當沖檔數','當沖股數','雙邊成交金額','淨損益','勝/敗','勝率(%)','報酬率(%)'];
+  const r2 = days.map(d => [
+    d.date, d.count, d.totalQty, Math.round(d.turnover),
+    Math.round(d.netPL), `${d.winCount}/${d.lossCount}`,
+    +d.winRate.toFixed(2), +d.rate.toFixed(2)
+  ]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([h2, ...r2]), '每日當沖');
+
+  const ts = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `當沖分析_${acc.name}_${ts}.xlsx`);
+  toast('已匯出 Excel', 'ok');
+}
+
+
 function buildStockAnalysis(acc) {
   // key: code, value: 統計
   const stocks = new Map();
@@ -1272,24 +1575,27 @@ function renderStockAnalysis() {
   const tb = document.querySelector('#stockTable tbody');
   if (!tb) return;
   if (!acc) {
-    tb.innerHTML = '<tr><td colspan="15" class="empty-state">尚未選擇帳戶</td></tr>';
+    tb.innerHTML = '<tr><td colspan="18" class="empty-state">尚未選擇帳戶</td></tr>';
     renderStockAnalyticsCards(null);
     return;
   }
 
   // 沒有任何資料時提示先匯入
   if (!acc.trades.length && !acc.realized.length && !acc.unrealized.length) {
-    tb.innerHTML = '<tr><td colspan="15" class="empty-state">尚無資料。請先到「⬆️ 匯入資料」匯入投資明細、已實現損益或未實現損益</td></tr>';
+    tb.innerHTML = '<tr><td colspan="18" class="empty-state">尚無資料。請先到「⬆️ 匯入資料」匯入投資明細、已實現損益或未實現損益</td></tr>';
     renderStockAnalyticsCards(null);
     return;
   }
 
   let stocks = buildStockAnalysis(acc);
+  // 當沖統計（按代號）
+  const dtByCode = aggregateDayTradesByCode(analyzeDayTrades(acc));
+
   renderStockAnalyticsCards(stocks);
 
   // 完全沒解析到任何股票
   if (!stocks.length) {
-    tb.innerHTML = '<tr><td colspan="15" class="empty-state">資料解析後沒有股票（請檢查匯入的資料）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="18" class="empty-state">資料解析後沒有股票（請檢查匯入的資料）</td></tr>';
     return;
   }
 
@@ -1308,7 +1614,7 @@ function renderStockAnalysis() {
   });
 
   if (!stocks.length) {
-    tb.innerHTML = `<tr><td colspan="15" class="empty-state">沒有符合條件的股票（總共 ${totalCount} 檔，請放寬搜尋或篩選）</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="18" class="empty-state">沒有符合條件的股票（總共 ${totalCount} 檔，請放寬搜尋或篩選）</td></tr>`;
     return;
   }
 
@@ -1316,6 +1622,7 @@ function renderStockAnalysis() {
   for (const s of stocks) {
     const expanded = _expandedStocks.has(s.code);
     const holdingTag = s.holding ? `<span class="year-tag" style="background:var(--success-light);color:var(--success)">持有 ${fmt(s.currentQty)}</span>` : '';
+    const dt = dtByCode.get(s.code);
     rows.push(`
       <tr class="month-row" data-code="${s.code}">
         <td><span class="month-toggle ${expanded?'expanded':''}">▶</span></td>
@@ -1333,10 +1640,13 @@ function renderStockAnalysis() {
         <td>${fmt(s.shortFee)}</td>
         <td class="hl ${plClass(s.actualPL)}"><strong>${fmt(s.actualPL,{sign:true})}</strong></td>
         <td class="${plClass(s.avgRate)}">${s.avgRate ? fmtPct(s.avgRate) : '—'}</td>
+        <td class="hl">${dt ? dt.count : '—'}</td>
+        <td class="hl ${dt?plClass(dt.netPL):''}">${dt ? fmt(dt.netPL,{sign:true}) : '—'}</td>
+        <td class="hl ${dt && dt.winRate>=50?'pos':(dt && dt.winRate<50?'neg':'')}">${dt ? dt.winRate.toFixed(1)+'%' : '—'}</td>
       </tr>
     `);
     if (expanded) {
-      rows.push(`<tr class="month-detail-row"><td colspan="15">${renderStockDetail(s)}</td></tr>`);
+      rows.push(`<tr class="month-detail-row"><td colspan="18">${renderStockDetail(s)}</td></tr>`);
     }
   }
   tb.innerHTML = rows.join('');
@@ -2089,6 +2399,10 @@ function bindEvents() {
   document.getElementById('stockSearch').oninput = renderStockAnalysis;
   document.getElementById('stockFilter').onchange = renderStockAnalysis;
   document.getElementById('btnExportStocks').onclick = exportStocksExcel;
+
+  // 每日當沖
+  document.getElementById('dayTradeYear').onchange = renderDayTrades;
+  document.getElementById('btnExportDayTrades').onclick = exportDayTradesExcel;
 
   // 資轉現
   document.getElementById('btnConvertToCash').onclick = showConvertToCashDialog;
