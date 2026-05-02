@@ -253,20 +253,18 @@ button {
 /* ============ 表格 ============ */
 .data-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   background: var(--surface);
-  border-radius: 10px;
-  overflow: hidden;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-  box-shadow: var(--shadow-sm);
-  border: 1px solid var(--border-light);
 }
 .data-table th, .data-table td {
   padding: 9px 10px;
   text-align: right;
   border-bottom: 1px solid var(--border-light);
   white-space: nowrap;
+  background-clip: padding-box;
 }
 .data-table tr:last-child td { border-bottom: none; }
 .data-table th:first-child, .data-table td:first-child,
@@ -274,17 +272,19 @@ button {
 .data-table th:nth-child(3), .data-table td:nth-child(3) {
   text-align: left;
 }
-.data-table th {
+.data-table thead th {
   background: var(--surface-2);
   color: var(--text-dim);
   font-weight: 600;
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 5;
+  /* 用 box-shadow 模擬底部框線（sticky 時 border 會跟著捲動而消失） */
+  box-shadow: inset 0 -1px 0 var(--border);
 }
-.data-table tbody tr:hover { background: var(--primary-light); }
+.data-table tbody tr:hover td { background: var(--primary-light); }
 .data-table th.hl {
-  background: var(--hl-bg);
+  background: var(--hl-bg) !important;
   color: var(--hl);
 }
 .data-table td.hl {
@@ -293,11 +293,29 @@ button {
 .data-table td.pos { color: var(--success); font-weight: 500; }
 .data-table td.neg { color: var(--danger); font-weight: 500; }
 
+/* 滾動容器：必須有明確高度才能讓 sticky 生效，且不能用 overflow:hidden */
 .table-scroll {
-  overflow-x: auto;
+  max-height: 70vh;
+  overflow: auto;
+  border: 1px solid var(--border-light);
   border-radius: 10px;
-  max-height: 75vh;
-  overflow-y: auto;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+/* 內層表格不需要再有 border 或 shadow */
+.table-scroll .data-table {
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+/* 不在 .table-scroll 內的獨立表格（例如總覽頁的小型表）保留外觀 */
+.data-table:not(.table-scroll .data-table) {
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+  /* 讓圓角包住 thead 的背景色 */
+  overflow: hidden;
 }
 
 .table-toolbar {

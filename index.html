@@ -65,13 +65,15 @@
   </div>
 
   <h3>各帳戶明細表</h3>
-  <table class="data-table" id="ovAccountTable">
-    <thead><tr>
-      <th>帳戶</th><th>市值</th><th>成本</th><th>未實現損益</th>
-      <th>已實現損益</th><th>融資利息</th><th>融券手續費</th>
-    </tr></thead>
-    <tbody></tbody>
-  </table>
+  <div class="table-scroll" style="max-height:400px">
+    <table class="data-table" id="ovAccountTable">
+      <thead><tr>
+        <th>帳戶</th><th>市值</th><th>成本</th><th>未實現損益</th>
+        <th>已實現損益</th><th>融資利息</th><th>融券手續費</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
 
   <h3>未實現損益快照趨勢</h3>
   <div class="chart-box big"><canvas id="chartTrend"></canvas></div>
@@ -179,12 +181,14 @@
 
   <h3 style="margin-top:30px">歷史快照</h3>
   <p class="hint">每次匯入未實現損益會儲存一筆快照，用來繪製趨勢圖</p>
-  <table class="data-table" id="snapshotTable">
-    <thead><tr>
-      <th>日期</th><th>市值</th><th>成本</th><th>損益</th><th>操作</th>
-    </tr></thead>
-    <tbody></tbody>
-  </table>
+  <div class="table-scroll" style="max-height:400px">
+    <table class="data-table" id="snapshotTable">
+      <thead><tr>
+        <th>日期</th><th>市值</th><th>成本</th><th>損益</th><th>操作</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
 </section>
 
 <!-- =================== 投資明細 =================== -->
