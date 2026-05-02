@@ -1108,6 +1108,10 @@ function buildStockAnalysis(acc) {
     s.marketValue += (x.marketValue || 0);
     s.cost += (x.cost || 0);
     s.unrealizedPL += (x.pl || 0);
+    // 如果交易明細沒匯入或不完整，用未實現的數量當持股數
+    if (s.currentQty <= 0 && (x.qty || 0) > 0) {
+      s.currentQty = x.qty;
+    }
   }
 
   // 計算實際損益和平均報酬率
@@ -1115,7 +1119,8 @@ function buildStockAnalysis(acc) {
     s.actualPL = s.realizedPL + s.adjust;
     // 平均報酬率：累計實現損益 / 累計買進金額
     s.avgRate = s.buyAmount > 0 ? (s.actualPL / s.buyAmount) * 100 : 0;
-    s.holding = s.currentQty > 0 || s.marketValue > 0;
+    // 持有判斷：未實現有市值或交易明細推算還有股數
+    s.holding = s.marketValue > 0 || s.currentQty > 0;
   }
 
   return [...stocks.values()].sort((a, b) => {
@@ -1127,15 +1132,165 @@ function buildStockAnalysis(acc) {
 
 const _expandedStocks = new Set();
 
+// ---------- 個股分析摘要卡片 ----------
+function renderStockAnalyticsCards(stocks) {
+  const wrap = document.getElementById('stockAnalyticsCards');
+  if (!wrap) return;
+  if (!stocks || !stocks.length) {
+    wrap.innerHTML = '';
+    return;
+  }
+
+  // 已實現過的股票（有買賣紀錄）
+  const closed = stocks.filter(s => s.realizedCount > 0);
+  const profitable = closed.filter(s => s.actualPL > 0);
+  const losing = closed.filter(s => s.actualPL < 0);
+  const winRate = closed.length > 0 ? (profitable.length / closed.length) * 100 : 0;
+
+  // 平均單筆獲利/虧損（依股票算）
+  const totalProfit = profitable.reduce((s, x) => s + x.actualPL, 0);
+  const totalLoss = Math.abs(losing.reduce((s, x) => s + x.actualPL, 0));
+  const avgProfit = profitable.length > 0 ? totalProfit / profitable.length : 0;
+  const avgLoss = losing.length > 0 ? totalLoss / losing.length : 0;
+  const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : (totalProfit > 0 ? Infinity : 0);
+
+  // 最賺/最賠的股票
+  const sortedByPL = closed.slice().sort((a,b) => b.actualPL - a.actualPL);
+  const bestStock = sortedByPL[0];
+  const worstStock = sortedByPL[sortedByPL.length - 1];
+
+  // 持股集中度（前 3 大占比）
+  const holdings = stocks.filter(s => s.holding && s.marketValue > 0)
+    .sort((a,b) => b.marketValue - a.marketValue);
+  const totalMarket = holdings.reduce((s,x) => s + x.marketValue, 0);
+  const top3Market = holdings.slice(0, 3).reduce((s,x) => s + x.marketValue, 0);
+  const concentrationPct = totalMarket > 0 ? (top3Market / totalMarket) * 100 : 0;
+
+  // 最常交易的股票（按進出總次數）
+  const sortedByTrades = stocks.slice()
+    .filter(s => s.buyCount + s.sellCount > 0)
+    .sort((a,b) => (b.buyCount + b.sellCount) - (a.buyCount + a.sellCount));
+  const mostTraded = sortedByTrades[0];
+
+  // 累計利息成本占比（利息 / 總獲利）
+  const totalInterest = stocks.reduce((s,x) => s + x.interest + x.shortFee, 0);
+
+  const cards = [];
+
+  if (closed.length > 0) {
+    cards.push(`
+      <div class="card">
+        <div class="label">勝率</div>
+        <div class="value ${winRate>=50?'pos':'neg'}">${winRate.toFixed(1)}%</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${profitable.length}/${closed.length} 檔獲利</div>
+      </div>
+    `);
+
+    cards.push(`
+      <div class="card">
+        <div class="label">盈虧比</div>
+        <div class="value ${profitFactor>=1?'pos':'neg'}">${profitFactor === Infinity ? '∞' : profitFactor.toFixed(2)}</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">總獲利 ÷ 總虧損</div>
+      </div>
+    `);
+
+    cards.push(`
+      <div class="card">
+        <div class="label">平均獲利 / 虧損</div>
+        <div class="value" style="font-size:16px">
+          <span class="pos">+${fmt(avgProfit)}</span>
+          <span style="color:var(--text-muted)"> / </span>
+          <span class="neg">-${fmt(avgLoss)}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${avgLoss>0 ? `風報比 1:${(avgProfit/avgLoss).toFixed(2)}` : ''}</div>
+      </div>
+    `);
+
+    if (bestStock) {
+      cards.push(`
+        <div class="card">
+          <div class="label">最賺的股票</div>
+          <div class="value pos" style="font-size:16px">${bestStock.code} ${bestStock.name||''}</div>
+          <div style="font-size:13px;color:var(--success);margin-top:2px;font-weight:600">+${fmt(bestStock.actualPL)}</div>
+        </div>
+      `);
+    }
+    if (worstStock && worstStock !== bestStock && worstStock.actualPL < 0) {
+      cards.push(`
+        <div class="card">
+          <div class="label">最賠的股票</div>
+          <div class="value neg" style="font-size:16px">${worstStock.code} ${worstStock.name||''}</div>
+          <div style="font-size:13px;color:var(--danger);margin-top:2px;font-weight:600">${fmt(worstStock.actualPL,{sign:true})}</div>
+        </div>
+      `);
+    }
+  }
+
+  if (holdings.length > 0) {
+    cards.push(`
+      <div class="card">
+        <div class="label">持股集中度</div>
+        <div class="value">${concentrationPct.toFixed(1)}%</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">前 3 大占總市值（共 ${holdings.length} 檔）</div>
+      </div>
+    `);
+  }
+
+  if (mostTraded) {
+    cards.push(`
+      <div class="card">
+        <div class="label">最常交易</div>
+        <div class="value" style="font-size:16px">${mostTraded.code} ${mostTraded.name||''}</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">買${mostTraded.buyCount}次/賣${mostTraded.sellCount}次</div>
+      </div>
+    `);
+  }
+
+  if (totalInterest > 0) {
+    const realizedTotal = closed.reduce((s,x) => s + x.actualPL, 0);
+    const interestRatio = realizedTotal !== 0 ? (totalInterest / Math.abs(realizedTotal)) * 100 : 0;
+    cards.push(`
+      <div class="card">
+        <div class="label">累計利息成本</div>
+        <div class="value">${fmt(totalInterest)}</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${interestRatio>0?`占實現損益 ${interestRatio.toFixed(1)}%`:''}</div>
+      </div>
+    `);
+  }
+
+  wrap.innerHTML = cards.join('');
+}
+
 function renderStockAnalysis() {
   const acc = getCurrentAccount();
   const tb = document.querySelector('#stockTable tbody');
-  if (!acc) return;
+  if (!tb) return;
+  if (!acc) {
+    tb.innerHTML = '<tr><td colspan="13" class="empty-state">尚未選擇帳戶</td></tr>';
+    renderStockAnalyticsCards(null);
+    return;
+  }
 
+  // 沒有任何資料時提示先匯入
+  if (!acc.trades.length && !acc.realized.length && !acc.unrealized.length) {
+    tb.innerHTML = '<tr><td colspan="13" class="empty-state">尚無資料。請先到「⬆️ 匯入資料」匯入投資明細、已實現損益或未實現損益</td></tr>';
+    renderStockAnalyticsCards(null);
+    return;
+  }
+
+  let stocks = buildStockAnalysis(acc);
+  renderStockAnalyticsCards(stocks);
+
+  // 完全沒解析到任何股票
+  if (!stocks.length) {
+    tb.innerHTML = '<tr><td colspan="13" class="empty-state">資料解析後沒有股票（請檢查匯入的資料）</td></tr>';
+    return;
+  }
+
+  const totalCount = stocks.length;
   const search = (document.getElementById('stockSearch')?.value || '').toLowerCase();
   const filter = document.getElementById('stockFilter')?.value || 'all';
 
-  let stocks = buildStockAnalysis(acc);
   // 篩選
   stocks = stocks.filter(s => {
     if (search && !(s.code.toLowerCase().includes(search) || (s.name||'').toLowerCase().includes(search))) return false;
@@ -1147,7 +1302,7 @@ function renderStockAnalysis() {
   });
 
   if (!stocks.length) {
-    tb.innerHTML = '<tr><td colspan="13" class="empty-state">沒有符合條件的股票</td></tr>';
+    tb.innerHTML = `<tr><td colspan="13" class="empty-state">沒有符合條件的股票（總共 ${totalCount} 檔，請放寬搜尋或篩選）</td></tr>`;
     return;
   }
 
@@ -1873,6 +2028,8 @@ function bindEvents() {
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      // 切換頁籤時重新渲染（避免某些子表沒資料的情況）
+      renderAll();
     };
   });
 
