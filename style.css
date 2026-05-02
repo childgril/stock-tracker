@@ -272,50 +272,49 @@ button {
 .data-table th:nth-child(3), .data-table td:nth-child(3) {
   text-align: left;
 }
+
+/* 表頭：sticky 凍結 */
 .data-table thead th {
   background: var(--surface-2);
   color: var(--text-dim);
   font-weight: 600;
   position: sticky;
   top: 0;
-  z-index: 5;
+  z-index: 10;
   /* 用 box-shadow 模擬底部框線（sticky 時 border 會跟著捲動而消失） */
   box-shadow: inset 0 -1px 0 var(--border);
 }
-.data-table tbody tr:hover td { background: var(--primary-light); }
-.data-table th.hl {
-  background: var(--hl-bg) !important;
+.data-table thead th.hl {
+  background: var(--hl-bg);
   color: var(--hl);
+  box-shadow: inset 0 -1px 0 var(--border);
 }
+
+.data-table tbody tr:hover td { background: var(--primary-light); }
 .data-table td.hl {
   background: rgba(254, 249, 230, 0.5);
 }
 .data-table td.pos { color: var(--success); font-weight: 500; }
 .data-table td.neg { color: var(--danger); font-weight: 500; }
 
-/* 滾動容器：必須有明確高度才能讓 sticky 生效，且不能用 overflow:hidden */
+/* 滾動容器：表頭 sticky 的關鍵是這個容器要有明確 max-height + overflow:auto，
+   且使用者必須在這個容器「內部」捲動（而不是整個頁面） */
 .table-scroll {
-  max-height: 70vh;
+  max-height: calc(100vh - 280px);
+  min-height: 300px;
   overflow: auto;
   border: 1px solid var(--border-light);
   border-radius: 10px;
   background: var(--surface);
   box-shadow: var(--shadow-sm);
-}
-/* 內層表格不需要再有 border 或 shadow */
-.table-scroll .data-table {
-  border: none;
-  box-shadow: none;
-  border-radius: 0;
+  overscroll-behavior: contain;
 }
 
-/* 不在 .table-scroll 內的獨立表格（例如總覽頁的小型表）保留外觀 */
-.data-table:not(.table-scroll .data-table) {
+/* 沒有 .table-scroll 包覆的表格（總覽小表）也要有外觀 */
+section .data-table:not(.table-scroll *) {
   border: 1px solid var(--border-light);
   border-radius: 10px;
   box-shadow: var(--shadow-sm);
-  /* 讓圓角包住 thead 的背景色 */
-  overflow: hidden;
 }
 
 .table-toolbar {
