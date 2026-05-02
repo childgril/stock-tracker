@@ -17,7 +17,7 @@
 
   <div class="sidebar-section">
     <div class="section-label">帳戶</div>
-    <select id="accountSelect"></select>
+    <div id="accountList" class="account-list"></div>
   </div>
 
   <nav class="tabs">
@@ -48,7 +48,10 @@
 
 <!-- =================== 總覽 =================== -->
 <section id="tab-overview" class="tab-content active">
-  <h2>跨帳戶總覽</h2>
+  <div class="page-header">
+    <h2>跨帳戶總覽</h2>
+    <div class="period-info" id="period-overview"></div>
+  </div>
   <div class="summary-grid">
     <div class="card"><div class="label">總市值（未實現）</div><div class="value" id="ovTotalMarket">—</div></div>
     <div class="card"><div class="label">總成本（未實現）</div><div class="value" id="ovTotalCost">—</div></div>
@@ -81,7 +84,10 @@
 
 <!-- =================== 帳戶明細 =================== -->
 <section id="tab-account" class="tab-content">
-  <h2 id="accountTitle">帳戶明細</h2>
+  <div class="page-header">
+    <h2 id="accountTitle">帳戶明細</h2>
+    <div class="period-info" id="period-account"></div>
+  </div>
   <div class="summary-grid">
     <div class="card"><div class="label">市值</div><div class="value" id="acMarket">—</div></div>
     <div class="card"><div class="label">成本</div><div class="value" id="acCost">—</div></div>
@@ -196,7 +202,10 @@
 
 <!-- =================== 已實現損益 =================== -->
 <section id="tab-realized" class="tab-content">
-  <h2>已實現損益</h2>
+  <div class="page-header">
+    <h2>已實現損益</h2>
+    <div class="period-info" id="period-realized"></div>
+  </div>
   <p class="hint">利息與融券手續費由投資明細自動比對補入；調整金額可手動編輯，會自動儲存。</p>
   <div class="summary-grid small">
     <div class="card"><div class="label">原始盈虧合計</div><div class="value" id="rzOriginal">—</div></div>
@@ -230,7 +239,10 @@
 
 <!-- =================== 未實現損益 =================== -->
 <section id="tab-unrealized" class="tab-content">
-  <h2>未實現損益</h2>
+  <div class="page-header">
+    <h2>未實現損益</h2>
+    <div class="period-info" id="period-unrealized"></div>
+  </div>
   <p class="hint" id="unrealizedSnapshotInfo"></p>
   <div class="summary-grid small">
     <div class="card"><div class="label">總市值</div><div class="value" id="urMarket">—</div></div>
@@ -265,7 +277,10 @@
 
 <!-- =================== 投資明細 =================== -->
 <section id="tab-trades" class="tab-content">
-  <h2>投資明細</h2>
+  <div class="page-header">
+    <h2>投資明細</h2>
+    <div class="period-info" id="period-trades"></div>
+  </div>
   <div class="table-toolbar">
     <input type="text" id="trSearch" placeholder="🔍 搜尋代號或名稱…">
     <select id="trFilterType">
@@ -302,7 +317,10 @@
 
 <!-- =================== 股票借款 =================== -->
 <section id="tab-loans" class="tab-content">
-  <h2>股票借款</h2>
+  <div class="page-header">
+    <h2>股票借款</h2>
+    <div class="period-info" id="period-loans"></div>
+  </div>
   <p class="hint">本頁面為目前帳戶（<span id="loansAccountName">—</span>）的借款紀錄</p>
 
   <div class="summary-grid small">
@@ -322,7 +340,10 @@
 </section>
 
 <section id="tab-import" class="tab-content">
-  <h2>匯入資料</h2>
+  <div class="page-header">
+    <h2>匯入資料</h2>
+    <div class="period-info" id="period-import"></div>
+  </div>
   <p class="hint">目前作用中帳戶：<strong id="currentAccountName">—</strong></p>
 
   <div class="import-grid">

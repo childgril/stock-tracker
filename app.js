@@ -148,20 +148,100 @@ function getCurrentAccount() {
 }
 
 function refreshAccountSelector() {
-  const sel = document.getElementById('accountSelect');
-  sel.innerHTML = '';
-  for (const a of State.data.accounts) {
-    const opt = document.createElement('option');
-    opt.value = a.id;
-    opt.textContent = a.name; // 只顯示帳戶名（已含券商前綴）
-    sel.appendChild(opt);
+  const list = document.getElementById('accountList');
+  if (!list) return;
+
+  if (!State.data.accounts.length) {
+    list.innerHTML = '<div class="account-empty">尚無帳戶<br>點下方「＋ 新增」</div>';
+  } else {
+    list.innerHTML = State.data.accounts.map(a => `
+      <div class="account-item ${a.id === State.currentAccountId ? 'active' : ''}"
+           data-id="${a.id}" draggable="true">
+        <span class="account-handle" title="拖曳調整順序">⋮⋮</span>
+        <span class="account-name">${a.name}</span>
+      </div>
+    `).join('');
+    bindAccountListEvents();
   }
-  sel.value = State.currentAccountId || '';
 
   document.getElementById('currentAccountName').textContent =
     getCurrentAccount() ? getCurrentAccount().name : '（無）';
   document.getElementById('accountTitle').textContent =
     getCurrentAccount() ? `帳戶明細：${getCurrentAccount().name}` : '帳戶明細';
+}
+
+// ---------- 帳戶清單拖曳 ----------
+let _dragSrcId = null;
+
+function bindAccountListEvents() {
+  const items = document.querySelectorAll('#accountList .account-item');
+
+  items.forEach(item => {
+    // 點擊切換帳戶
+    item.onclick = (e) => {
+      // 拖曳時不要觸發切換
+      if (item.classList.contains('dragging')) return;
+      State.currentAccountId = item.dataset.id;
+      State.data.currentAccountId = State.currentAccountId;
+      save();
+      refreshAccountSelector();
+      renderAll();
+    };
+
+    // 拖曳事件
+    item.ondragstart = (e) => {
+      _dragSrcId = item.dataset.id;
+      item.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      // Firefox 需要設定 data 才會觸發拖曳
+      try { e.dataTransfer.setData('text/plain', item.dataset.id); } catch (err) {}
+    };
+
+    item.ondragend = () => {
+      item.classList.remove('dragging');
+      document.querySelectorAll('#accountList .drag-over').forEach(el => el.classList.remove('drag-over'));
+      _dragSrcId = null;
+    };
+
+    item.ondragover = (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (item.dataset.id !== _dragSrcId) {
+        document.querySelectorAll('#accountList .drag-over').forEach(el => el.classList.remove('drag-over'));
+        item.classList.add('drag-over');
+      }
+    };
+
+    item.ondragleave = () => {
+      item.classList.remove('drag-over');
+    };
+
+    item.ondrop = (e) => {
+      e.preventDefault();
+      item.classList.remove('drag-over');
+      const targetId = item.dataset.id;
+      if (!_dragSrcId || _dragSrcId === targetId) return;
+      reorderAccounts(_dragSrcId, targetId);
+    };
+  });
+}
+
+function reorderAccounts(sourceId, targetId) {
+  const accounts = State.data.accounts;
+  const srcIdx = accounts.findIndex(a => a.id === sourceId);
+  const tgtIdx = accounts.findIndex(a => a.id === targetId);
+  if (srcIdx < 0 || tgtIdx < 0 || srcIdx === tgtIdx) return;
+
+  // 把來源拿出來，插到目標前面
+  const [moved] = accounts.splice(srcIdx, 1);
+  // splice 之後 tgtIdx 可能要重算
+  const newTgtIdx = accounts.findIndex(a => a.id === targetId);
+  accounts.splice(newTgtIdx, 0, moved);
+
+  save();
+  refreshAccountSelector();
+  renderOverview();  // 總覽各帳戶順序也要更新
+  toast('已調整順序', 'ok');
 }
 
 async function newAccount() {
@@ -462,6 +542,80 @@ function renderAll() {
   renderUnrealized();
   renderTrades();
   renderLoans();
+  renderPeriodInfo();
+}
+
+// ---------- 交易期間（每頁右上角）----------
+function getDateRange(accounts) {
+  // 從一個或多個帳戶的所有資料中找出最早與最晚日期
+  let min = null, max = null;
+  const consider = (d) => {
+    if (!d) return;
+    const s = String(d).trim();
+    if (!/^\d{4}\/\d{1,2}\/\d{1,2}/.test(s)) return;
+    const norm = s.slice(0, 10);
+    if (!min || norm < min) min = norm;
+    if (!max || norm > max) max = norm;
+  };
+
+  for (const acc of accounts) {
+    if (!acc) continue;
+    for (const t of (acc.trades || [])) consider(t.date);
+    for (const r of (acc.realized || [])) {
+      consider(r.sellDate);
+      consider(r.buyDate);
+    }
+    for (const s of (acc.snapshots || [])) consider(s.date);
+    if (acc.unrealizedSnapshotDate) consider(acc.unrealizedSnapshotDate);
+  }
+  return { min, max };
+}
+
+function formatPeriodHTML(range) {
+  if (!range.min || !range.max) {
+    return `<span class="label">交易期間</span><span class="range" style="color:var(--text-muted);font-weight:400">尚無資料</span>`;
+  }
+  // 算天數
+  let daysHtml = '';
+  try {
+    const d1 = new Date(range.min.replace(/\//g, '-'));
+    const d2 = new Date(range.max.replace(/\//g, '-'));
+    if (!isNaN(d1) && !isNaN(d2)) {
+      const days = Math.round((d2 - d1) / 86400000) + 1;
+      daysHtml = `<span class="days">共 ${days} 天</span>`;
+    }
+  } catch (e) {}
+  return `
+    <span class="label">交易期間</span>
+    <span class="range">${range.min} ～ ${range.max}</span>
+    ${daysHtml}
+  `;
+}
+
+function renderPeriodInfo() {
+  // 各帳戶頁面用「目前帳戶」
+  const acc = getCurrentAccount();
+  const accRange = acc ? getDateRange([acc]) : { min: null, max: null };
+  const accHtml = formatPeriodHTML(accRange);
+
+  // 總覽用「全部帳戶」
+  const allRange = getDateRange(State.data.accounts || []);
+  const allHtml = formatPeriodHTML(allRange);
+
+  // 各 section 對應
+  const map = {
+    'period-overview': allHtml,
+    'period-account': accHtml,
+    'period-realized': accHtml,
+    'period-unrealized': accHtml,
+    'period-trades': accHtml,
+    'period-loans': accHtml,
+    'period-import': accHtml
+  };
+  for (const [id, html] of Object.entries(map)) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  }
 }
 
 // ---------- 帳戶聚合 ----------
@@ -2354,14 +2508,7 @@ function bindEvents() {
     };
   });
 
-  // 帳戶選擇
-  document.getElementById('accountSelect').onchange = (e) => {
-    State.currentAccountId = e.target.value;
-    State.data.currentAccountId = e.target.value;
-    save();
-    refreshAccountSelector();
-    renderAll();
-  };
+  // 帳戶切換已在 bindAccountListEvents 內處理（點擊清單項目）
   document.getElementById('btnNewAccount').onclick = newAccount;
   document.getElementById('btnRenameAccount').onclick = renameAccount;
   document.getElementById('btnDeleteAccount').onclick = deleteAccount;
