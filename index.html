@@ -27,6 +27,7 @@
     <button class="tab" data-tab="realized">💰 已實現損益</button>
     <button class="tab" data-tab="trades">📋 投資明細</button>
     <button class="tab" data-tab="loans">🏛️ 股票借款</button>
+    <button class="tab" data-tab="margincall">⚠️ 融資回補</button>
     <button class="tab" data-tab="import">⬆️ 匯入資料</button>
   </nav>
 
@@ -60,6 +61,7 @@
     <div class="card"><div class="label">已實現損益（含調整）</div><div class="value" id="ovRealizedPL">—</div></div>
     <div class="card"><div class="label">已付融資利息</div><div class="value" id="ovTotalInterest">—</div></div>
     <div class="card"><div class="label">已付融券手續費</div><div class="value" id="ovTotalShortFee">—</div></div>
+    <div class="card"><div class="label">未領回回補金額</div><div class="value" id="ovMarginCallRemaining">—</div></div>
   </div>
 
   <h3>各帳戶分布</h3>
@@ -98,6 +100,7 @@
     <div class="card"><div class="label">融券手續費合計</div><div class="value" id="acShortFee">—</div></div>
     <div class="card"><div class="label">借款利息累計</div><div class="value" id="acLoanInterest">—</div></div>
     <div class="card"><div class="label">借款餘額</div><div class="value" id="acLoanBalance">—</div></div>
+    <div class="card"><div class="label">未領回回補金額</div><div class="value" id="acMarginCallRemaining">—</div></div>
   </div>
 
   <div id="acDataStatus"></div>
@@ -119,6 +122,7 @@
         <th>融資利息</th>
         <th>融券手續費</th>
         <th>借款利息</th>
+        <th>融資回補</th>
         <th>調整金額</th>
         <th>實際損益</th>
         <th>交易筆數</th>
@@ -338,6 +342,28 @@
   </div>
 
   <div id="loanList"></div>
+</section>
+
+<!-- =================== 融資回補 =================== -->
+<section id="tab-margincall" class="tab-content">
+  <div class="page-header">
+    <h2>融資回補紀錄</h2>
+    <div class="period-info" id="period-margincall"></div>
+  </div>
+  <p class="hint">記錄因維持率不足而追繳的金額。本頁面為目前帳戶（<span id="mcAccountName">—</span>）的紀錄</p>
+
+  <div class="summary-grid small">
+    <div class="card"><div class="label">累計回補金額</div><div class="value" id="mcTotalIn">—</div></div>
+    <div class="card"><div class="label">累計已領回</div><div class="value" id="mcTotalOut">—</div></div>
+    <div class="card"><div class="label">未領回金額</div><div class="value" id="mcRemaining">—</div></div>
+    <div class="card"><div class="label">進行中筆數</div><div class="value" id="mcActiveCount">—</div></div>
+  </div>
+
+  <div class="table-toolbar">
+    <button class="btn-mini primary" id="btnAddMarginCall">＋ 新增回補</button>
+  </div>
+
+  <div id="marginCallList"></div>
 </section>
 
 <section id="tab-import" class="tab-content">

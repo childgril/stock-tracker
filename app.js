@@ -18,13 +18,14 @@ function emptyAccount(name, broker = '元大') {
     name,
     broker,
     createdAt: new Date().toISOString(),
-    unrealized: [],          // 最新一筆未實現損益
+    unrealized: [],
     unrealizedSnapshotDate: null,
-    snapshots: [],           // [{date, items, totalMarket, totalCost, totalPL}]
-    trades: [],              // 投資明細
-    realized: [],            // 已實現（含 interest, shortFee, adjust, note, actualPL）
-    adjustments: {},         // {realizedKey: {adjust, note}} 即使重新匯入也保留
-    loans: []                // 借款紀錄 [{id, purpose, principal, rate, startDate, dueDate, status, interestPayments:[], repayments:[]}]
+    snapshots: [],
+    trades: [],
+    realized: [],
+    adjustments: {},
+    loans: [],
+    marginCalls: []          // 融資回補紀錄 [{id, date, amount, reason, ratio, note, payouts:[{date,amount,note}], status}]
   };
 }
 
@@ -42,10 +43,11 @@ function load() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const data = JSON.parse(raw);
-      // 資料遷移：舊版本帳戶補上 loans 欄位
+      // 資料遷移：舊版本帳戶補上欄位
       if (data.accounts) {
         for (const acc of data.accounts) {
           if (!Array.isArray(acc.loans)) acc.loans = [];
+          if (!Array.isArray(acc.marginCalls)) acc.marginCalls = [];
         }
       }
       return data;
@@ -565,6 +567,7 @@ function renderAll() {
   renderUnrealized();
   renderTrades();
   renderLoans();
+  renderMarginCalls();
   renderPeriodInfo();
 }
 
@@ -633,6 +636,7 @@ function renderPeriodInfo() {
     'period-unrealized': accHtml,
     'period-trades': accHtml,
     'period-loans': accHtml,
+    'period-margincall': accHtml,
     'period-import': accHtml
   };
   for (const [id, html] of Object.entries(map)) {
@@ -659,16 +663,24 @@ function aggregateAccount(acc) {
     s + (l.repayments || []).reduce((ss, p) => ss + (p.amount || 0), 0), 0);
   const loanRemaining = loanPrincipal - loanRepaid;
 
+  // 融資回補
+  const marginCalls = acc.marginCalls || [];
+  const mcTotal = marginCalls.reduce((s, m) => s + (m.amount || 0), 0);
+  const mcPayout = marginCalls.reduce((s, m) =>
+    s + (m.payouts || []).reduce((ss, p) => ss + (p.amount || 0), 0), 0);
+  const mcRemaining = mcTotal - mcPayout;
+
   // 已實現損益要扣借款利息（你要求的：借款利息計入實際損益）
   const realizedPL = realizedPLRaw - loanInterestPaid;
 
   return {
     totalMarket, totalCost, unrealizedPL,
     totalInterest, totalShortFee,
-    realizedPL,        // 已扣借款利息
-    realizedPLRaw,     // 未扣借款利息（純股票交易實現損益）
+    realizedPL,
+    realizedPLRaw,
     loanInterestPaid,
-    loanPrincipal, loanRepaid, loanRemaining
+    loanPrincipal, loanRepaid, loanRemaining,
+    mcTotal, mcPayout, mcRemaining
   };
 }
 
@@ -681,13 +693,14 @@ function setVal(id, val, withClass = false) {
 
 // ---------- 總覽 ----------
 function renderOverview() {
-  let M=0, C=0, U=0, R=0, I=0, S=0, LI=0, LB=0;
+  let M=0, C=0, U=0, R=0, I=0, S=0, LI=0, LB=0, MCR=0;
   const perAccount = [];
   for (const a of State.data.accounts) {
     const g = aggregateAccount(a);
     M += g.totalMarket; C += g.totalCost; U += g.unrealizedPL;
     R += g.realizedPL; I += g.totalInterest; S += g.totalShortFee;
     LI += g.loanInterestPaid; LB += g.loanRemaining;
+    MCR += g.mcRemaining;
     perAccount.push({ name: a.name, ...g });
   }
   setVal('ovTotalMarket', M);
@@ -696,6 +709,7 @@ function renderOverview() {
   setVal('ovRealizedPL', R, true);
   setVal('ovTotalInterest', I);
   setVal('ovTotalShortFee', S);
+  setVal('ovMarginCallRemaining', MCR);
 
   // 表
   const tb = document.querySelector('#ovAccountTable tbody');
@@ -811,7 +825,7 @@ function renderAccount() {
   const acc = getCurrentAccount();
   const status = document.getElementById('acDataStatus');
   if (!acc) {
-    ['acMarket','acCost','acUnrealizedPL','acRealizedPL','acInterest','acShortFee','acLoanInterest','acLoanBalance']
+    ['acMarket','acCost','acUnrealizedPL','acRealizedPL','acInterest','acShortFee','acLoanInterest','acLoanBalance','acMarginCallRemaining']
       .forEach(id => setVal(id, '—'));
     status.innerHTML = '<div class="empty-state">尚未選擇帳戶</div>';
     document.querySelector('#monthlyTable tbody').innerHTML =
@@ -827,6 +841,7 @@ function renderAccount() {
   setVal('acShortFee', g.totalShortFee);
   setVal('acLoanInterest', g.loanInterestPaid);
   setVal('acLoanBalance', g.loanRemaining);
+  setVal('acMarginCallRemaining', g.mcRemaining);
 
   const lines = [];
   lines.push(`<p class="hint">未實現損益：<strong>${acc.unrealized.length}</strong> 檔（快照日 ${acc.unrealizedSnapshotDate || '—'}）　|　投資明細：<strong>${acc.trades.length}</strong> 筆　|　已實現損益：<strong>${acc.realized.length}</strong> 筆　|　歷史快照：<strong>${(acc.snapshots||[]).length}</strong> 筆　|　借款：<strong>${(acc.loans||[]).length}</strong> 筆</p>`);
@@ -897,10 +912,19 @@ function buildMonthlyData(acc) {
     }
   }
 
+  // 融資回補：以回補日為準（純參考，不計入實際損益）
+  for (const mc of (acc.marginCalls || [])) {
+    const k = getMonthKey(mc.date);
+    if (!k) continue;
+    const m = ensure(k);
+    m.marginCall = (m.marginCall || 0) + (mc.amount || 0);
+  }
+
   // 計算實際損益（已實現損益 + 調整 - 借款利息）
-  // 注意：盈虧已經扣過融資利息和融券手續費
+  // 注意：盈虧已經扣過融資利息和融券手續費；融資回補不計入
   for (const m of months.values()) {
     m.actual = m.realizedPL + m.adjust - m.loanInterest;
+    if (!m.marginCall) m.marginCall = 0;
   }
 
   return [...months.values()].sort((a, b) => b.key.localeCompare(a.key));
@@ -928,7 +952,7 @@ function renderMonthly() {
   const filtered = currentYear ? data.filter(m => m.key.startsWith(currentYear)) : data;
 
   if (!filtered.length) {
-    tb.innerHTML = '<tr><td colspan="14" class="empty-state">尚無資料（請先匯入已實現損益或投資明細）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="15" class="empty-state">尚無資料（請先匯入已實現損益或投資明細）</td></tr>';
     return;
   }
 
@@ -945,6 +969,7 @@ function renderMonthly() {
         <td>${fmt(m.interest)}</td>
         <td>${fmt(m.shortFee)}</td>
         <td class="${m.loanInterest?'neg':''}">${m.loanInterest ? '-'+fmt(m.loanInterest) : '—'}</td>
+        <td>${m.marginCall ? fmt(m.marginCall) : '—'}</td>
         <td class="${plClass(m.adjust)}">${m.adjust?fmt(m.adjust,{sign:true}):'—'}</td>
         <td class="hl ${plClass(m.actual)}">${fmt(m.actual,{sign:true})}</td>
         <td>${m.tradeCount}</td>
@@ -956,7 +981,7 @@ function renderMonthly() {
       </tr>
     `);
     if (expanded) {
-      rows.push(`<tr class="month-detail-row"><td colspan="14">${renderMonthDetail(m)}</td></tr>`);
+      rows.push(`<tr class="month-detail-row"><td colspan="15">${renderMonthDetail(m)}</td></tr>`);
     }
   }
   tb.innerHTML = rows.join('');
@@ -1024,6 +1049,31 @@ function renderMonthDetail(m) {
     html.push('</tbody></table></div>');
   }
 
+  // 該月融資回補
+  const monthMCs = (getCurrentAccount().marginCalls || []).filter(mc => getMonthKey(mc.date) === m.key);
+  if (monthMCs.length > 0) {
+    html.push('<div class="nested">');
+    html.push('<h4 style="padding:10px 14px 0">⚠️ 該月融資回補（' + monthMCs.length + ' 筆）</h4>');
+    html.push('<table class="loan-subtable"><thead><tr>');
+    html.push('<th>編號</th><th>日期</th><th>回補金額</th><th>原因</th><th>已領回</th><th>未領回</th><th>狀態</th>');
+    html.push('</tr></thead><tbody>');
+    for (const mc of monthMCs) {
+      const paid = (mc.payouts || []).reduce((s, p) => s + (p.amount || 0), 0);
+      const remaining = (mc.amount || 0) - paid;
+      const status = remaining <= 0 ? '已全額領回' : (paid > 0 ? '部分領回' : '未領回');
+      html.push(`<tr>
+        <td>${mc.id}</td>
+        <td>${mc.date}</td>
+        <td>${fmt(mc.amount)}</td>
+        <td>${mc.reason||''}</td>
+        <td>${fmt(paid)}</td>
+        <td class="${remaining>0?'neg':''}">${fmt(remaining)}</td>
+        <td>${status}</td>
+      </tr>`);
+    }
+    html.push('</tbody></table></div>');
+  }
+
   if (html.length === 0) html.push('<div class="empty-state">該月無細項資料</div>');
   return html.join('');
 }
@@ -1038,13 +1088,13 @@ function exportMonthlyExcel() {
   const dayTrades = analyzeDayTrades(acc);
   const dtByMonth = aggregateDayTradesByMonth(dayTrades);
 
-  const headers = ['月份','已實現損益','融資利息','融券手續費','借款利息','調整金額','實際損益','交易筆數','總成交金額',
+  const headers = ['月份','已實現損益','融資利息','融券手續費','借款利息','融資回補','調整金額','實際損益','交易筆數','總成交金額',
                    '當沖筆數','當沖損益','當沖勝率(%)','當沖報酬率(%)'];
   const rows = data.map(m => {
     const dt = dtByMonth.get(m.key);
     return [
       m.key, m.realizedPL, m.interest, m.shortFee,
-      m.loanInterest, m.adjust, m.actual,
+      m.loanInterest, m.marginCall || 0, m.adjust, m.actual,
       m.tradeCount, m.tradeAmount,
       dt ? dt.count : 0,
       dt ? dt.netPL : 0,
@@ -2140,6 +2190,256 @@ function calcEstimatedInterest(loan, asOfDate = new Date()) {
   return Math.round(total);
 }
 
+// ============================================================
+// 融資回補（追繳）
+// ============================================================
+
+function mcGenId(acc) {
+  const existing = (acc.marginCalls || []).map(m => m.id);
+  let n = existing.length + 1;
+  while (existing.includes('MC-' + String(n).padStart(3,'0'))) n++;
+  return 'MC-' + String(n).padStart(3, '0');
+}
+
+function renderMarginCalls() {
+  const acc = getCurrentAccount();
+  const list = document.getElementById('marginCallList');
+  const nameSpan = document.getElementById('mcAccountName');
+  if (!list) return;
+
+  if (!acc) {
+    if (nameSpan) nameSpan.textContent = '—';
+    list.innerHTML = '<div class="empty-state">尚未選擇帳戶</div>';
+    ['mcTotalIn','mcTotalOut','mcRemaining','mcActiveCount'].forEach(id => setVal(id, '—'));
+    return;
+  }
+  if (nameSpan) nameSpan.textContent = acc.name;
+
+  const mcs = acc.marginCalls || [];
+  const total = mcs.reduce((s, m) => s + (m.amount || 0), 0);
+  const paid = mcs.reduce((s, m) =>
+    s + (m.payouts || []).reduce((ss, p) => ss + (p.amount || 0), 0), 0);
+  const remaining = total - paid;
+  const active = mcs.filter(m => {
+    const p = (m.payouts || []).reduce((s, p) => s + (p.amount || 0), 0);
+    return p < (m.amount || 0);
+  }).length;
+
+  setVal('mcTotalIn', total);
+  setVal('mcTotalOut', paid);
+  setVal('mcRemaining', remaining);
+  setVal('mcActiveCount', active);
+
+  if (!mcs.length) {
+    list.innerHTML = '<div class="empty-state">尚無融資回補紀錄。點上方「＋ 新增回補」開始記錄。</div>';
+    return;
+  }
+
+  // 排序：未領回的優先、再依日期遞減
+  const sorted = mcs.slice().sort((a, b) => {
+    const aPaid = (a.payouts || []).reduce((s, p) => s + (p.amount || 0), 0);
+    const bPaid = (b.payouts || []).reduce((s, p) => s + (p.amount || 0), 0);
+    const aActive = aPaid < (a.amount || 0);
+    const bActive = bPaid < (b.amount || 0);
+    if (aActive !== bActive) return aActive ? -1 : 1;
+    return (b.date || '').localeCompare(a.date || '');
+  });
+
+  list.innerHTML = sorted.map(mc => renderMarginCallCard(mc)).join('');
+  bindMarginCallEvents();
+}
+
+function renderMarginCallCard(mc) {
+  const total = mc.amount || 0;
+  const paid = (mc.payouts || []).reduce((s, p) => s + (p.amount || 0), 0);
+  const remaining = total - paid;
+  const fullyPaid = remaining <= 0;
+  const status = fullyPaid ? '已全額領回' : (paid > 0 ? '部分領回' : '未領回');
+
+  let payoutRows = (mc.payouts || []).slice().reverse().map((p, i) => `
+    <tr>
+      <td>${p.date}</td>
+      <td>${fmt(p.amount)}</td>
+      <td>${p.note || ''}</td>
+      <td><button class="btn-mini danger" data-act="del-payout" data-mc="${mc.id}" data-idx="${(mc.payouts||[]).length-1-i}" style="padding:2px 6px;font-size:11px">刪</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="empty-state">尚未領回</td></tr>';
+
+  return `
+    <div class="loan-card">
+      <div class="loan-card-header ${fullyPaid?'settled':''}">
+        <span class="loan-id">${mc.id}</span>
+        <span class="loan-purpose">${mc.reason || '（無說明）'}</span>
+        <span class="loan-status ${fullyPaid?'settled':''}">${status}</span>
+      </div>
+      <div class="loan-card-body">
+        <div class="loan-fields">
+          <div class="loan-field"><div class="label">回補日期</div><div class="value">${mc.date || '—'}</div></div>
+          <div class="loan-field"><div class="label">回補金額</div><div class="value">${fmt(total)}</div></div>
+          <div class="loan-field"><div class="label">維持率</div><div class="value">${mc.ratio ? mc.ratio + '%' : '—'}</div></div>
+          <div class="loan-field"><div class="label">已領回</div><div class="value">${fmt(paid)}</div></div>
+          <div class="loan-field"><div class="label">未領回</div><div class="value ${remaining>0?'neg':'pos'}">${fmt(remaining)}</div></div>
+          ${mc.note ? `<div class="loan-field" style="grid-column:1/-1"><div class="label">備註</div><div class="value" style="font-size:13px;font-weight:400">${mc.note}</div></div>` : ''}
+        </div>
+
+        <div class="loan-subsection">
+          <h4>💰 領回紀錄</h4>
+          <table class="loan-subtable">
+            <thead><tr><th>日期</th><th>金額</th><th>備註</th><th></th></tr></thead>
+            <tbody>${payoutRows}</tbody>
+          </table>
+        </div>
+
+        <div class="loan-actions">
+          ${!fullyPaid ? `<button class="btn-mini primary" data-act="add-payout" data-mc="${mc.id}">＋ 新增領回</button>` : ''}
+          <button class="btn-mini" data-act="edit" data-mc="${mc.id}">編輯</button>
+          <button class="btn-mini danger" data-act="delete" data-mc="${mc.id}">刪除回補</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function bindMarginCallEvents() {
+  document.querySelectorAll('#marginCallList button[data-act]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const act = btn.dataset.act;
+      const mcId = btn.dataset.mc;
+      const acc = getCurrentAccount();
+      const mc = acc.marginCalls.find(x => x.id === mcId);
+      if (!mc) return;
+
+      if (act === 'add-payout') await addMarginCallPayout(mc);
+      else if (act === 'edit') await editMarginCall(mc);
+      else if (act === 'delete') {
+        const ok = await confirmDialog('刪除回補', `確定刪除「${mc.id}」？所有領回紀錄會一併消失。`);
+        if (ok) {
+          acc.marginCalls = acc.marginCalls.filter(x => x.id !== mcId);
+          save(); renderAll();
+          toast('已刪除', 'ok');
+        }
+      }
+      else if (act === 'del-payout') {
+        const idx = parseInt(btn.dataset.idx, 10);
+        mc.payouts.splice(idx, 1);
+        save(); renderAll();
+      }
+    };
+  });
+}
+
+async function addMarginCall() {
+  const acc = getCurrentAccount();
+  if (!acc) return toast('請先選擇帳戶', 'err');
+  const today = todayStr().replace(/\//g, '-');
+  const result = await showModal({
+    title: '⚠️ 新增融資回補',
+    html: `
+      <div style="display:grid;gap:10px;min-width:380px">
+        <label>回補日期<input type="date" id="mc-date" value="${today}"></label>
+        <label>回補金額<input type="number" id="mc-amount" placeholder="例：100000"></label>
+        <label>維持率(%)（可選）<input type="number" id="mc-ratio" placeholder="例：125" step="0.01"></label>
+        <label>觸發原因<input type="text" id="mc-reason" value="跌破130%維持率" placeholder="例：跌破130%維持率、追繳"></label>
+        <label>備註<input type="text" id="mc-note" placeholder="可不填"></label>
+      </div>
+    `,
+    onConfirm: (body) => ({
+      date: body.querySelector('#mc-date').value,
+      amount: parseFloat(body.querySelector('#mc-amount').value) || 0,
+      ratio: parseFloat(body.querySelector('#mc-ratio').value) || 0,
+      reason: body.querySelector('#mc-reason').value.trim(),
+      note: body.querySelector('#mc-note').value.trim()
+    })
+  });
+  if (!result || !result.amount) return;
+
+  const mc = {
+    id: mcGenId(acc),
+    date: Parsers.formatDate(result.date),
+    amount: result.amount,
+    ratio: result.ratio || null,
+    reason: result.reason || '',
+    note: result.note || '',
+    payouts: [],
+    createdAt: new Date().toISOString()
+  };
+  acc.marginCalls.push(mc);
+  save();
+  renderAll();
+  toast(`已新增回補 ${mc.id}`, 'ok');
+}
+
+async function editMarginCall(mc) {
+  const result = await showModal({
+    title: `編輯回補 ${mc.id}`,
+    html: `
+      <div style="display:grid;gap:10px;min-width:380px">
+        <label>回補日期<input type="date" id="mc-date" value="${(mc.date||'').replace(/\//g,'-')}"></label>
+        <label>回補金額<input type="number" id="mc-amount" value="${mc.amount||0}"></label>
+        <label>維持率(%)<input type="number" id="mc-ratio" value="${mc.ratio||''}" step="0.01"></label>
+        <label>觸發原因<input type="text" id="mc-reason" value="${(mc.reason||'').replace(/"/g,'&quot;')}"></label>
+        <label>備註<input type="text" id="mc-note" value="${(mc.note||'').replace(/"/g,'&quot;')}"></label>
+      </div>
+    `,
+    onConfirm: (body) => ({
+      date: body.querySelector('#mc-date').value,
+      amount: parseFloat(body.querySelector('#mc-amount').value) || 0,
+      ratio: parseFloat(body.querySelector('#mc-ratio').value) || 0,
+      reason: body.querySelector('#mc-reason').value.trim(),
+      note: body.querySelector('#mc-note').value.trim()
+    })
+  });
+  if (!result) return;
+  mc.date = Parsers.formatDate(result.date);
+  mc.amount = result.amount;
+  mc.ratio = result.ratio || null;
+  mc.reason = result.reason;
+  mc.note = result.note;
+  save();
+  renderAll();
+  toast('已更新', 'ok');
+}
+
+async function addMarginCallPayout(mc) {
+  const today = todayStr().replace(/\//g, '-');
+  const paid = (mc.payouts || []).reduce((s, p) => s + (p.amount || 0), 0);
+  const remaining = (mc.amount || 0) - paid;
+
+  const result = await showModal({
+    title: `新增領回 - ${mc.id}`,
+    html: `
+      <div style="display:grid;gap:10px;min-width:380px">
+        <label>日期<input type="date" id="po-date" value="${today}"></label>
+        <label>領回金額（剩餘 ${fmt(remaining)}）<input type="number" id="po-amount"></label>
+        <label>備註<input type="text" id="po-note" placeholder="可不填"></label>
+        <label><input type="checkbox" id="po-full"> 全額領回（自動填入剩餘金額）</label>
+      </div>
+    `,
+    onConfirm: (body) => {
+      const full = body.querySelector('#po-full').checked;
+      return {
+        date: body.querySelector('#po-date').value,
+        amount: full ? remaining : (parseFloat(body.querySelector('#po-amount').value) || 0),
+        note: body.querySelector('#po-note').value.trim()
+      };
+    }
+  });
+  if (!result || !result.amount) return;
+
+  if (!mc.payouts) mc.payouts = [];
+  mc.payouts.push({
+    date: Parsers.formatDate(result.date),
+    amount: result.amount,
+    note: result.note
+  });
+  mc.payouts.sort((a, b) => a.date.localeCompare(b.date));
+  save();
+  renderAll();
+  toast('已新增領回', 'ok');
+}
+
+
 function renderLoans() {
   const acc = getCurrentAccount();
   const list = document.getElementById('loanList');
@@ -2605,6 +2905,9 @@ function bindEvents() {
 
   // 借款
   bindClick('btnAddLoan', addLoan);
+
+  // 融資回補
+  bindClick('btnAddMarginCall', addMarginCall);
 
   // 清空帳戶
   bindClick('btnClearAccount', async () => {
