@@ -1040,6 +1040,7 @@ function buildStockAnalysis(acc) {
         code, name: name || '',
         buyCount: 0, sellCount: 0,
         buyAmount: 0, sellAmount: 0,
+        buyQty: 0, sellQty: 0,    // 累計買/賣股數（用來算平均價）
         realizedCount: 0,
         realizedPL: 0,    // 從已實現損益的「盈虧」加總
         adjust: 0,
@@ -1081,10 +1082,12 @@ function buildStockAnalysis(acc) {
     if (t.action === '買') {
       s.buyCount++;
       s.buyAmount += (t.amount || 0);
+      s.buyQty += (t.qty || 0);
       s.currentQty += (t.qty || 0);
     } else if (t.action === '賣') {
       s.sellCount++;
       s.sellAmount += (t.amount || 0);
+      s.sellQty += (t.qty || 0);
       s.currentQty -= (t.qty || 0);
     }
   }
@@ -1119,6 +1122,9 @@ function buildStockAnalysis(acc) {
     s.actualPL = s.realizedPL + s.adjust;
     // 平均報酬率：累計實現損益 / 累計買進金額
     s.avgRate = s.buyAmount > 0 ? (s.actualPL / s.buyAmount) * 100 : 0;
+    // 平均買價、平均賣價（用累計金額/股數，避免單筆價格簡單平均的偏差）
+    s.avgBuyPrice = s.buyQty > 0 ? s.buyAmount / s.buyQty : 0;
+    s.avgSellPrice = s.sellQty > 0 ? s.sellAmount / s.sellQty : 0;
     // 持有判斷：未實現有市值或交易明細推算還有股數
     s.holding = s.marketValue > 0 || s.currentQty > 0;
   }
@@ -1266,14 +1272,14 @@ function renderStockAnalysis() {
   const tb = document.querySelector('#stockTable tbody');
   if (!tb) return;
   if (!acc) {
-    tb.innerHTML = '<tr><td colspan="13" class="empty-state">尚未選擇帳戶</td></tr>';
+    tb.innerHTML = '<tr><td colspan="15" class="empty-state">尚未選擇帳戶</td></tr>';
     renderStockAnalyticsCards(null);
     return;
   }
 
   // 沒有任何資料時提示先匯入
   if (!acc.trades.length && !acc.realized.length && !acc.unrealized.length) {
-    tb.innerHTML = '<tr><td colspan="13" class="empty-state">尚無資料。請先到「⬆️ 匯入資料」匯入投資明細、已實現損益或未實現損益</td></tr>';
+    tb.innerHTML = '<tr><td colspan="15" class="empty-state">尚無資料。請先到「⬆️ 匯入資料」匯入投資明細、已實現損益或未實現損益</td></tr>';
     renderStockAnalyticsCards(null);
     return;
   }
@@ -1283,7 +1289,7 @@ function renderStockAnalysis() {
 
   // 完全沒解析到任何股票
   if (!stocks.length) {
-    tb.innerHTML = '<tr><td colspan="13" class="empty-state">資料解析後沒有股票（請檢查匯入的資料）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="15" class="empty-state">資料解析後沒有股票（請檢查匯入的資料）</td></tr>';
     return;
   }
 
@@ -1302,7 +1308,7 @@ function renderStockAnalysis() {
   });
 
   if (!stocks.length) {
-    tb.innerHTML = `<tr><td colspan="13" class="empty-state">沒有符合條件的股票（總共 ${totalCount} 檔，請放寬搜尋或篩選）</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="15" class="empty-state">沒有符合條件的股票（總共 ${totalCount} 檔，請放寬搜尋或篩選）</td></tr>`;
     return;
   }
 
@@ -1317,6 +1323,8 @@ function renderStockAnalysis() {
         <td>${s.name||''} ${holdingTag}</td>
         <td>${s.buyCount}/${s.sellCount}</td>
         <td>${s.realizedCount}</td>
+        <td>${s.avgBuyPrice ? fmt(s.avgBuyPrice, {decimals:2}) : '—'}</td>
+        <td>${s.avgSellPrice ? fmt(s.avgSellPrice, {decimals:2}) : '—'}</td>
         <td>${s.holding ? fmt(s.currentQty) : '—'}</td>
         <td>${fmt(s.buyAmount)}</td>
         <td>${fmt(s.sellAmount)}</td>
@@ -1328,7 +1336,7 @@ function renderStockAnalysis() {
       </tr>
     `);
     if (expanded) {
-      rows.push(`<tr class="month-detail-row"><td colspan="13">${renderStockDetail(s)}</td></tr>`);
+      rows.push(`<tr class="month-detail-row"><td colspan="15">${renderStockDetail(s)}</td></tr>`);
     }
   }
   tb.innerHTML = rows.join('');
@@ -1414,11 +1422,14 @@ function exportStocksExcel() {
   if (!stocks.length) return toast('沒有資料可匯出', 'err');
 
   const headers = ['代號','名稱','持有中股數','進出次數','已實現次數',
+                   '平均買價','平均賣價',
                    '累計買進','累計賣出','累計實現損益','調整金額','累計利息',
                    '累計融券費','實際損益','平均報酬率(%)','市值','成本','未實現損益'];
   const rows = stocks.map(s => [
     s.code, s.name, s.currentQty,
     `${s.buyCount}/${s.sellCount}`, s.realizedCount,
+    s.avgBuyPrice ? +s.avgBuyPrice.toFixed(2) : 0,
+    s.avgSellPrice ? +s.avgSellPrice.toFixed(2) : 0,
     s.buyAmount, s.sellAmount, s.realizedPL, s.adjust, s.interest,
     s.shortFee, s.actualPL, s.avgRate.toFixed(2),
     s.marketValue, s.cost, s.unrealizedPL
