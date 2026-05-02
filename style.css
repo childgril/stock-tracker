@@ -102,62 +102,54 @@ h3 { margin: 25px 0 12px; font-size: 15px; color: var(--text-dim); font-weight: 
   grid-column: 1 / -1;
 }
 
-/* ============ 帳戶清單（可拖曳）============ */
-.account-list {
+/* ============ 帳戶順序調整對話框 ============ */
+.reorder-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  max-height: 240px;
+  gap: 4px;
+  max-height: 60vh;
   overflow-y: auto;
 }
-.account-item {
+.reorder-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
+  gap: 8px;
+  padding: 8px 10px;
   background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid transparent;
+  border: 1px solid var(--border-light);
   border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-  user-select: none;
-  transition: all 0.12s;
-}
-.account-item:hover {
-  background: var(--surface-3);
-}
-.account-item.active {
-  background: var(--primary-light);
-  color: var(--primary-dark);
-  border-color: var(--primary);
-  font-weight: 600;
-}
-.account-item.dragging {
-  opacity: 0.4;
-}
-.account-item.drag-over {
-  border-top: 2px solid var(--primary);
-}
-.account-handle {
-  color: var(--text-muted);
-  font-size: 14px;
   cursor: grab;
+  user-select: none;
+}
+.reorder-item:active { cursor: grabbing; }
+.reorder-item.dragging { opacity: 0.4; }
+.reorder-item.drag-over { border-top: 2px solid var(--primary); }
+.reorder-handle {
+  color: var(--text-muted);
+  cursor: grab;
+  font-size: 14px;
   padding: 0 2px;
-  line-height: 1;
 }
-.account-handle:active { cursor: grabbing; }
-.account-name {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.account-empty {
+.reorder-num {
   color: var(--text-muted);
   font-size: 12px;
-  padding: 10px;
-  text-align: center;
+  font-variant-numeric: tabular-nums;
+  min-width: 24px;
+}
+.reorder-name {
+  flex: 1;
+  font-weight: 500;
+}
+.reorder-buttons {
+  display: flex;
+  gap: 4px;
+}
+.reorder-buttons .btn-mini {
+  padding: 3px 8px;
+  font-size: 11px;
 }
 
 .tabs {

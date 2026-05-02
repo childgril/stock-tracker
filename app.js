@@ -148,21 +148,16 @@ function getCurrentAccount() {
 }
 
 function refreshAccountSelector() {
-  const list = document.getElementById('accountList');
-  if (!list) return;
-
-  if (!State.data.accounts.length) {
-    list.innerHTML = '<div class="account-empty">尚無帳戶<br>點下方「＋ 新增」</div>';
-  } else {
-    list.innerHTML = State.data.accounts.map(a => `
-      <div class="account-item ${a.id === State.currentAccountId ? 'active' : ''}"
-           data-id="${a.id}" draggable="true">
-        <span class="account-handle" title="拖曳調整順序">⋮⋮</span>
-        <span class="account-name">${a.name}</span>
-      </div>
-    `).join('');
-    bindAccountListEvents();
+  const sel = document.getElementById('accountSelect');
+  if (!sel) return;
+  sel.innerHTML = '';
+  for (const a of State.data.accounts) {
+    const opt = document.createElement('option');
+    opt.value = a.id;
+    opt.textContent = a.name;
+    sel.appendChild(opt);
   }
+  sel.value = State.currentAccountId || '';
 
   document.getElementById('currentAccountName').textContent =
     getCurrentAccount() ? getCurrentAccount().name : '（無）';
@@ -170,78 +165,106 @@ function refreshAccountSelector() {
     getCurrentAccount() ? `帳戶明細：${getCurrentAccount().name}` : '帳戶明細';
 }
 
-// ---------- 帳戶清單拖曳 ----------
-let _dragSrcId = null;
+// ---------- 帳戶順序調整對話框 ----------
+async function reorderAccountsDialog() {
+  if (!State.data.accounts.length) return toast('沒有帳戶可調整', 'err');
 
-function bindAccountListEvents() {
-  const items = document.querySelectorAll('#accountList .account-item');
+  const root = document.getElementById('modalRoot');
+  // 製作清單 HTML
+  const renderList = (items) => items.map((a, i) => `
+    <li class="reorder-item" data-id="${a.id}" draggable="true">
+      <span class="reorder-handle">⋮⋮</span>
+      <span class="reorder-num">${i + 1}.</span>
+      <span class="reorder-name">${a.name}</span>
+      <span class="reorder-buttons">
+        <button class="btn-mini" data-act="up" title="上移">▲</button>
+        <button class="btn-mini" data-act="down" title="下移">▼</button>
+      </span>
+    </li>
+  `).join('');
 
-  items.forEach(item => {
-    // 點擊切換帳戶
-    item.onclick = (e) => {
-      // 拖曳時不要觸發切換
-      if (item.classList.contains('dragging')) return;
-      State.currentAccountId = item.dataset.id;
-      State.data.currentAccountId = State.currentAccountId;
-      save();
-      refreshAccountSelector();
-      renderAll();
-    };
+  // 工作副本（取消時不會改原資料）
+  let working = State.data.accounts.slice();
 
-    // 拖曳事件
-    item.ondragstart = (e) => {
-      _dragSrcId = item.dataset.id;
-      item.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      // Firefox 需要設定 data 才會觸發拖曳
-      try { e.dataTransfer.setData('text/plain', item.dataset.id); } catch (err) {}
-    };
+  root.innerHTML = `
+    <div class="modal-overlay">
+      <div class="modal" style="min-width:400px;max-width:520px">
+        <h3>調整帳戶順序</h3>
+        <p class="hint" style="margin-top:0">拖曳左側 ⋮⋮ 圖示，或用 ▲▼ 按鈕調整順序</p>
+        <ul class="reorder-list" id="reorderList">${renderList(working)}</ul>
+        <div class="modal-actions">
+          <button class="btn-mini" data-act="cancel">取消</button>
+          <button class="btn-mini primary" data-act="ok">儲存</button>
+        </div>
+      </div>
+    </div>
+  `;
 
-    item.ondragend = () => {
-      item.classList.remove('dragging');
-      document.querySelectorAll('#accountList .drag-over').forEach(el => el.classList.remove('drag-over'));
-      _dragSrcId = null;
-    };
+  const listEl = root.querySelector('#reorderList');
 
-    item.ondragover = (e) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      if (item.dataset.id !== _dragSrcId) {
-        document.querySelectorAll('#accountList .drag-over').forEach(el => el.classList.remove('drag-over'));
-        item.classList.add('drag-over');
-      }
-    };
+  const refreshList = () => {
+    listEl.innerHTML = renderList(working);
+    bindRow();
+  };
 
-    item.ondragleave = () => {
-      item.classList.remove('drag-over');
-    };
+  const move = (id, delta) => {
+    const idx = working.findIndex(a => a.id === id);
+    const newIdx = idx + delta;
+    if (newIdx < 0 || newIdx >= working.length) return;
+    const [m] = working.splice(idx, 1);
+    working.splice(newIdx, 0, m);
+    refreshList();
+  };
 
-    item.ondrop = (e) => {
-      e.preventDefault();
-      item.classList.remove('drag-over');
-      const targetId = item.dataset.id;
-      if (!_dragSrcId || _dragSrcId === targetId) return;
-      reorderAccounts(_dragSrcId, targetId);
-    };
-  });
-}
+  let dragId = null;
+  const bindRow = () => {
+    listEl.querySelectorAll('.reorder-item').forEach(li => {
+      li.querySelector('[data-act="up"]').onclick = (e) => { e.stopPropagation(); move(li.dataset.id, -1); };
+      li.querySelector('[data-act="down"]').onclick = (e) => { e.stopPropagation(); move(li.dataset.id, +1); };
 
-function reorderAccounts(sourceId, targetId) {
-  const accounts = State.data.accounts;
-  const srcIdx = accounts.findIndex(a => a.id === sourceId);
-  const tgtIdx = accounts.findIndex(a => a.id === targetId);
-  if (srcIdx < 0 || tgtIdx < 0 || srcIdx === tgtIdx) return;
+      li.ondragstart = (e) => {
+        dragId = li.dataset.id;
+        li.classList.add('dragging');
+        try { e.dataTransfer.setData('text/plain', dragId); } catch {}
+        e.dataTransfer.effectAllowed = 'move';
+      };
+      li.ondragend = () => {
+        li.classList.remove('dragging');
+        listEl.querySelectorAll('.drag-over').forEach(x => x.classList.remove('drag-over'));
+      };
+      li.ondragover = (e) => {
+        e.preventDefault();
+        if (li.dataset.id !== dragId) {
+          listEl.querySelectorAll('.drag-over').forEach(x => x.classList.remove('drag-over'));
+          li.classList.add('drag-over');
+        }
+      };
+      li.ondragleave = () => li.classList.remove('drag-over');
+      li.ondrop = (e) => {
+        e.preventDefault();
+        li.classList.remove('drag-over');
+        const targetId = li.dataset.id;
+        if (!dragId || dragId === targetId) return;
+        const srcIdx = working.findIndex(a => a.id === dragId);
+        const tgtIdx = working.findIndex(a => a.id === targetId);
+        const [m] = working.splice(srcIdx, 1);
+        const newTgtIdx = working.findIndex(a => a.id === targetId);
+        working.splice(newTgtIdx, 0, m);
+        refreshList();
+      };
+    });
+  };
+  bindRow();
 
-  // 把來源拿出來，插到目標前面
-  const [moved] = accounts.splice(srcIdx, 1);
-  // splice 之後 tgtIdx 可能要重算
-  const newTgtIdx = accounts.findIndex(a => a.id === targetId);
-  accounts.splice(newTgtIdx, 0, moved);
-
-  save();
-  refreshAccountSelector();
-  renderOverview();  // 總覽各帳戶順序也要更新
-  toast('已調整順序', 'ok');
+  root.querySelector('[data-act="cancel"]').onclick = () => { root.innerHTML = ''; };
+  root.querySelector('[data-act="ok"]').onclick = () => {
+    State.data.accounts = working;
+    save();
+    refreshAccountSelector();
+    renderAll();
+    root.innerHTML = '';
+    toast('已儲存新順序', 'ok');
+  };
 }
 
 async function newAccount() {
@@ -2508,9 +2531,17 @@ function bindEvents() {
     };
   });
 
-  // 帳戶切換已在 bindAccountListEvents 內處理（點擊清單項目）
+  // 帳戶選擇
+  document.getElementById('accountSelect').onchange = (e) => {
+    State.currentAccountId = e.target.value;
+    State.data.currentAccountId = e.target.value;
+    save();
+    refreshAccountSelector();
+    renderAll();
+  };
   document.getElementById('btnNewAccount').onclick = newAccount;
   document.getElementById('btnRenameAccount').onclick = renameAccount;
+  document.getElementById('btnReorderAccount').onclick = reorderAccountsDialog;
   document.getElementById('btnDeleteAccount').onclick = deleteAccount;
 
   // 備份
