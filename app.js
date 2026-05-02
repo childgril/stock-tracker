@@ -2518,6 +2518,23 @@ function renderTrades() {
 // 事件綁定
 // ============================================================
 
+// 安全綁定：抓不到 element 也不會炸
+function bindClick(id, handler) {
+  const el = document.getElementById(id);
+  if (el) el.onclick = handler;
+  else console.warn(`bindClick: element "${id}" not found`);
+}
+function bindChange(id, handler) {
+  const el = document.getElementById(id);
+  if (el) el.onchange = handler;
+  else console.warn(`bindChange: element "${id}" not found`);
+}
+function bindInput(id, handler) {
+  const el = document.getElementById(id);
+  if (el) el.oninput = handler;
+  else console.warn(`bindInput: element "${id}" not found`);
+}
+
 function bindEvents() {
   // Tab 切換
   document.querySelectorAll('.tab').forEach(btn => {
@@ -2532,25 +2549,25 @@ function bindEvents() {
   });
 
   // 帳戶選擇
-  document.getElementById('accountSelect').onchange = (e) => {
+  bindChange('accountSelect', (e) => {
     State.currentAccountId = e.target.value;
     State.data.currentAccountId = e.target.value;
     save();
     refreshAccountSelector();
     renderAll();
-  };
-  document.getElementById('btnNewAccount').onclick = newAccount;
-  document.getElementById('btnRenameAccount').onclick = renameAccount;
-  document.getElementById('btnReorderAccount').onclick = reorderAccountsDialog;
-  document.getElementById('btnDeleteAccount').onclick = deleteAccount;
+  });
+  bindClick('btnNewAccount', newAccount);
+  bindClick('btnRenameAccount', renameAccount);
+  bindClick('btnReorderAccount', reorderAccountsDialog);
+  bindClick('btnDeleteAccount', deleteAccount);
 
   // 備份
-  document.getElementById('btnBackup').onclick = exportBackup;
-  document.getElementById('btnRestore').onclick = () => document.getElementById('restoreFile').click();
-  document.getElementById('restoreFile').onchange = (e) => {
+  bindClick('btnBackup', exportBackup);
+  bindClick('btnRestore', () => document.getElementById('restoreFile').click());
+  bindChange('restoreFile', (e) => {
     const f = e.target.files[0]; if (f) restoreBackup(f);
     e.target.value = '';
-  };
+  });
 
   // 上傳
   bindUpload('upUnrealized', importUnrealized);
@@ -2558,45 +2575,46 @@ function bindEvents() {
   bindUpload('upRealized', importRealized);
 
   // 快照日期預設今天
-  document.getElementById('snapshotDate').valueAsDate = new Date();
+  const sd = document.getElementById('snapshotDate');
+  if (sd) sd.valueAsDate = new Date();
 
   // 搜尋
-  document.getElementById('rzSearch').oninput = renderRealized;
-  document.getElementById('trSearch').oninput = renderTrades;
-  document.getElementById('trFilterType').onchange = renderTrades;
-  document.getElementById('trFilterAction').onchange = renderTrades;
+  bindInput('rzSearch', renderRealized);
+  bindInput('trSearch', renderTrades);
+  bindChange('trFilterType', renderTrades);
+  bindChange('trFilterAction', renderTrades);
 
   // 匯出已實現
-  document.getElementById('btnExportRealized').onclick = exportRealizedExcel;
+  bindClick('btnExportRealized', exportRealizedExcel);
 
   // 每月損益
-  document.getElementById('monthlyYear').onchange = renderMonthly;
-  document.getElementById('btnExportMonthly').onclick = exportMonthlyExcel;
+  bindChange('monthlyYear', renderMonthly);
+  bindClick('btnExportMonthly', exportMonthlyExcel);
 
   // 個股損益分析
-  document.getElementById('stockSearch').oninput = renderStockAnalysis;
-  document.getElementById('stockFilter').onchange = renderStockAnalysis;
-  document.getElementById('btnExportStocks').onclick = exportStocksExcel;
+  bindInput('stockSearch', renderStockAnalysis);
+  bindChange('stockFilter', renderStockAnalysis);
+  bindClick('btnExportStocks', exportStocksExcel);
 
   // 每日當沖
-  document.getElementById('dayTradeYear').onchange = renderDayTrades;
-  document.getElementById('btnExportDayTrades').onclick = exportDayTradesExcel;
+  bindChange('dayTradeYear', renderDayTrades);
+  bindClick('btnExportDayTrades', exportDayTradesExcel);
 
   // 資轉現
-  document.getElementById('btnConvertToCash').onclick = showConvertToCashDialog;
+  bindClick('btnConvertToCash', showConvertToCashDialog);
 
   // 借款
-  document.getElementById('btnAddLoan').onclick = addLoan;
+  bindClick('btnAddLoan', addLoan);
 
   // 清空帳戶
-  document.getElementById('btnClearAccount').onclick = async () => {
+  bindClick('btnClearAccount', async () => {
     const acc = getCurrentAccount();
     if (!acc) return;
     const ok = await confirmDialog('清空帳戶資料', `確定清空「${acc.name}」的所有未實現、投資明細、已實現資料？（帳戶與調整紀錄保留）`);
     if (!ok) return;
     acc.unrealized = []; acc.trades = []; acc.realized = []; acc.snapshots = [];
     save(); renderAll(); toast('已清空', 'ok');
-  };
+  });
 }
 
 function bindUpload(inputId, handler) {
