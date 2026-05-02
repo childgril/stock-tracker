@@ -82,6 +82,7 @@ h3 { margin: 25px 0 12px; font-size: 15px; color: var(--text-dim); font-weight: 
   margin-top: auto;
   padding-top: 16px;
   border-top: 1px solid var(--border-light);
+  flex-shrink: 0;
 }
 
 .section-label {
@@ -95,18 +96,14 @@ h3 { margin: 25px 0 12px; font-size: 15px; color: var(--text-dim); font-weight: 
 
 .account-actions {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: 1fr 1fr;
   gap: 4px;
 }
 .account-actions .btn-mini {
-  padding: 5px 6px;
-  font-size: 11px;
+  padding: 6px 8px;
+  font-size: 12px;
   white-space: nowrap;
   text-align: center;
-}
-.account-actions .danger {
-  /* 不再橫跨整行 */
-  grid-column: auto;
 }
 
 /* ============ 帳戶順序調整對話框 ============ */
