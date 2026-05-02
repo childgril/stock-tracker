@@ -153,29 +153,27 @@ function refreshAccountSelector() {
   for (const a of State.data.accounts) {
     const opt = document.createElement('option');
     opt.value = a.id;
-    opt.textContent = `${a.broker} - ${a.name}`;
+    opt.textContent = a.name; // 只顯示帳戶名（已含券商前綴）
     sel.appendChild(opt);
   }
   sel.value = State.currentAccountId || '';
 
   document.getElementById('currentAccountName').textContent =
-    getCurrentAccount() ? `${getCurrentAccount().broker} - ${getCurrentAccount().name}` : '（無）';
+    getCurrentAccount() ? getCurrentAccount().name : '（無）';
   document.getElementById('accountTitle').textContent =
-    getCurrentAccount() ? `帳戶明細：${getCurrentAccount().broker} - ${getCurrentAccount().name}` : '帳戶明細';
+    getCurrentAccount() ? `帳戶明細：${getCurrentAccount().name}` : '帳戶明細';
 }
 
 async function newAccount() {
-  const name = await promptText('新增帳戶（券商與名稱）', '');
+  const name = await promptText('新增帳戶（格式：券商－名字，例如 元大－音）', '');
   if (!name) return;
-  // 偵測券商
+
+  // 從名稱前綴偵測券商（用來自動辨識匯入檔案的格式）
   let broker = '其他';
   if (/元大/.test(name)) broker = '元大';
   else if (/國泰/.test(name)) broker = '國泰';
   else if (/新光/.test(name)) broker = '新光';
-  else {
-    const b = await promptText('選擇券商：元大 / 國泰 / 新光 / 其他', '元大');
-    if (b) broker = b;
-  }
+
   const acc = emptyAccount(name, broker);
   State.data.accounts.push(acc);
   State.currentAccountId = acc.id;
@@ -183,24 +181,29 @@ async function newAccount() {
   save();
   refreshAccountSelector();
   renderAll();
-  toast(`已建立帳戶：${broker} - ${name}`, 'ok');
+  toast(`已建立帳戶：${name}`, 'ok');
 }
 
 async function renameAccount() {
   const acc = getCurrentAccount();
   if (!acc) return toast('請先選擇帳戶', 'err');
-  const name = await promptText('新名稱', acc.name);
+  const name = await promptText('新名稱（格式：券商－名字）', acc.name);
   if (!name) return;
   acc.name = name;
+  // 重新偵測券商
+  if (/元大/.test(name)) acc.broker = '元大';
+  else if (/國泰/.test(name)) acc.broker = '國泰';
+  else if (/新光/.test(name)) acc.broker = '新光';
   save();
   refreshAccountSelector();
+  renderAll();
   toast('已重新命名', 'ok');
 }
 
 async function deleteAccount() {
   const acc = getCurrentAccount();
   if (!acc) return;
-  const ok = await confirmDialog('刪除帳戶', `確定要刪除「${acc.broker} - ${acc.name}」？所有資料將永久消失。`);
+  const ok = await confirmDialog('刪除帳戶', `確定要刪除「${acc.name}」？所有資料將永久消失。`);
   if (!ok) return;
   State.data.accounts = State.data.accounts.filter(a => a.id !== acc.id);
   State.currentAccountId = State.data.accounts[0]?.id || null;
@@ -444,7 +447,7 @@ function exportRealizedExcel() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '已實現損益');
   const ts = new Date().toISOString().slice(0,10);
-  XLSX.writeFile(wb, `已實現損益_${acc.broker}_${acc.name}_${ts}.xlsx`);
+  XLSX.writeFile(wb, `已實現損益_${acc.name}_${ts}.xlsx`);
   toast('已匯出 Excel', 'ok');
 }
 
@@ -508,7 +511,7 @@ function renderOverview() {
     M += g.totalMarket; C += g.totalCost; U += g.unrealizedPL;
     R += g.realizedPL; I += g.totalInterest; S += g.totalShortFee;
     LI += g.loanInterestPaid; LB += g.loanRemaining;
-    perAccount.push({ name: `${a.broker}-${a.name}`, ...g });
+    perAccount.push({ name: a.name, ...g });
   }
   setVal('ovTotalMarket', M);
   setVal('ovTotalCost', C);
@@ -871,7 +874,7 @@ function exportMonthlyExcel() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '每月損益');
   const ts = new Date().toISOString().slice(0,10);
-  XLSX.writeFile(wb, `每月損益_${acc.broker}_${acc.name}_${ts}.xlsx`);
+  XLSX.writeFile(wb, `每月損益_${acc.name}_${ts}.xlsx`);
   toast('已匯出 Excel', 'ok');
 }
 
@@ -1075,7 +1078,7 @@ function renderLoans() {
       .forEach(id => setVal(id, '—'));
     return;
   }
-  nameSpan.textContent = `${acc.broker} - ${acc.name}`;
+  nameSpan.textContent = acc.name;
 
   const loans = acc.loans || [];
   const totalPrincipal = loans.reduce((s,l) => s + (l.principal || 0), 0);
@@ -1478,7 +1481,7 @@ function bindEvents() {
   document.getElementById('btnClearAccount').onclick = async () => {
     const acc = getCurrentAccount();
     if (!acc) return;
-    const ok = await confirmDialog('清空帳戶資料', `確定清空「${acc.broker} - ${acc.name}」的所有未實現、投資明細、已實現資料？（帳戶與調整紀錄保留）`);
+    const ok = await confirmDialog('清空帳戶資料', `確定清空「${acc.name}」的所有未實現、投資明細、已實現資料？（帳戶與調整紀錄保留）`);
     if (!ok) return;
     acc.unrealized = []; acc.trades = []; acc.realized = []; acc.snapshots = [];
     save(); renderAll(); toast('已清空', 'ok');
@@ -1508,9 +1511,9 @@ function bindUpload(inputId, handler) {
 async function init() {
   State.data = load();
 
-  // 沒有帳戶就建立一個預設的
+  // 沒有帳戶就建立一個預設的（名稱保留可改）
   if (!State.data.accounts.length) {
-    State.data.accounts.push(emptyAccount('主帳戶', '元大'));
+    State.data.accounts.push(emptyAccount('元大－主帳戶', '元大'));
     State.data.currentAccountId = State.data.accounts[0].id;
     save();
   }
