@@ -640,21 +640,8 @@ const Parsers = (() => {
   //       會在 _preInterest / _preShortFee 上預先記錄，直接採用不需比對。
   // ============================================================
   function enrichRealizedWithInterest(realizedItems, tradeItems) {
-    // 1. 先把所有列重設為 0；新光（_preInterest 存在）直接用預設值
+    // 1. 先把所有列重設為預設值
     for (const r of realizedItems) {
-      // 手動指定的：直接從 trades 裡的對應交易讀取，跳過自動比對
-      if (r._manualMatchTradeKey) {
-        const matched = tradeItems.find(t => makeTradeKey(t) === r._manualMatchTradeKey);
-        if (matched) {
-          r.interest = matched.marginInterest || 0;
-          r.shortFee = matched.shortFee || 0;
-          r._unmatched = false;
-          r._matchSource = 'manual';
-          continue;
-        }
-        // 找不到對應 trade（被刪了）→ 清除 manual link，走自動流程
-        delete r._manualMatchTradeKey;
-      }
       if (r._preInterest != null || r._preShortFee != null) {
         // 新光：直接用已實現表上的數字
         r.interest = r._preInterest || 0;
@@ -669,25 +656,80 @@ const Parsers = (() => {
       } else {
         r.interest = 0; r.shortFee = 0; r._unmatched = true;
         r._matchSource = null;
+        delete r._matchedTradeKey;
       }
     }
 
-    // 2. 取出賣出融資/融券交易，按 (code, date, category) 分組（同條件可能有多張委託）
+    // 2. 處理手動配對（按群組：所有指向同一 trade 的已實現視為一組，利息按比例分攤）
+    const manualGroups = new Map(); // tradeKey -> array of realized
+    for (const r of realizedItems) {
+      if (!r._manualMatchTradeKey) continue;
+      // 確認 trade 還存在
+      const t = tradeItems.find(x => makeTradeKey(x) === r._manualMatchTradeKey);
+      if (!t) {
+        // 對應 trade 被刪了 → 清掉 link
+        delete r._manualMatchTradeKey;
+        continue;
+      }
+      const k = r._manualMatchTradeKey;
+      if (!manualGroups.has(k)) manualGroups.set(k, []);
+      manualGroups.get(k).push(r);
+    }
+
+    for (const [tradeKey, group] of manualGroups) {
+      const trade = tradeItems.find(x => makeTradeKey(x) === tradeKey);
+      if (!trade) continue;
+      const interest = trade.marginInterest || 0;
+      const sFee = trade.shortFee || 0;
+      const costSum = group.reduce((s, r) => s + (r.cost || 0), 0);
+
+      if (group.length === 1) {
+        group[0].interest = interest;
+        group[0].shortFee = sFee;
+      } else {
+        // 按沖銷成本比例分攤，最後一筆吃掉誤差
+        let allocatedI = 0, allocatedS = 0;
+        for (let i = 0; i < group.length; i++) {
+          const r = group[i];
+          if (i === group.length - 1) {
+            r.interest = interest - allocatedI;
+            r.shortFee = sFee - allocatedS;
+          } else {
+            const ratio = costSum > 0 ? (r.cost || 0) / costSum : (1 / group.length);
+            r.interest = Math.round(interest * ratio);
+            r.shortFee = Math.round(sFee * ratio);
+            allocatedI += r.interest;
+            allocatedS += r.shortFee;
+          }
+        }
+      }
+      for (const r of group) {
+        r._unmatched = false;
+        r._matchSource = 'manual';
+      }
+    }
+
+    // 3. 取出尚未配對（沒手動指定）的賣出融資/融券交易，按 (code, date, category) 分組
+    const usedTradeKeys = new Set();
+    for (const r of realizedItems) {
+      if (r._manualMatchTradeKey) usedTradeKeys.add(r._manualMatchTradeKey);
+    }
     const sellTrades = tradeItems.filter(t =>
-      t.action === '賣' && (t.category === '融資' || t.category === '融券')
+      t.action === '賣' && (t.category === '融資' || t.category === '融券') &&
+      !usedTradeKeys.has(makeTradeKey(t))
     );
-    const tradeBuckets = new Map(); // key -> array of trade
+    const tradeBuckets = new Map();
     for (const t of sellTrades) {
       const k = `${t.code}|${t.date}|${t.category}`;
       if (!tradeBuckets.has(k)) tradeBuckets.set(k, []);
       tradeBuckets.get(k).push(t);
     }
 
-    // 3. 把已實現按 (code, sellDate, sellCategory) 分組（保留原順序）
-    //    跳過新光（已預先填好）
+    // 4. 把「未配對且非新光」的已實現按 (code, sellDate, sellCategory) 分組
     const realizedBuckets = new Map();
     for (const r of realizedItems) {
       if (r._preInterest != null || r._preShortFee != null) continue;
+      if (r._matchSource === 'manual') continue;
       if (r.sellCategory !== '融資' && r.sellCategory !== '融券') continue;
       const k = `${r.code}|${r.sellDate}|${r.sellCategory}`;
       if (!realizedBuckets.has(k)) realizedBuckets.set(k, []);

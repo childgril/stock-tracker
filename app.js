@@ -1281,12 +1281,11 @@ async function showManualMatchDialog(realized) {
     return toast('投資明細裡沒有任何「賣出融資/融券」紀錄可配對', 'err');
   }
 
-  // 哪些已被其他已實現引用？
-  const usedKeys = new Set();
+  // 哪些已被其他已實現「手動」引用？（自動配對的不算「佔用」，因為一旦你手動配對會把它解開）
+  const manuallyUsedKeys = new Set();
   for (const r of acc.realized) {
     if (r === realized) continue;
-    if (r._matchedTradeKey) usedKeys.add(r._matchedTradeKey);
-    if (r._manualMatchTradeKey) usedKeys.add(r._manualMatchTradeKey);
+    if (r._manualMatchTradeKey) manuallyUsedKeys.add(r._manualMatchTradeKey);
   }
 
   const buildListHTML = (showAll) => {
@@ -1298,11 +1297,11 @@ async function showManualMatchDialog(realized) {
         <tbody>
         ${list.map(t => {
           const k = Parsers.makeTradeKey(t);
-          const used = usedKeys.has(k);
+          const used = manuallyUsedKeys.has(k);
           const isCurrent = (realized._manualMatchTradeKey === k);
           const disabled = used && !isCurrent ? 'disabled' : '';
-          const stateColor = used ? 'color:#aaa' : isCurrent ? 'color:#22c55e;font-weight:600' : '';
-          const stateText = used ? '已被引用' : isCurrent ? '目前配對' : '可選';
+          const stateColor = used && !isCurrent ? 'color:#aaa' : isCurrent ? 'color:#22c55e;font-weight:600' : '';
+          const stateText = used && !isCurrent ? '其他已實現手動引用' : isCurrent ? '目前配對' : '可選';
           return `
             <tr style="${used && !isCurrent ? 'opacity:0.4' : ''}">
               <td><input type="radio" name="match-pick" value="${k}" ${isCurrent?'checked':''} ${disabled}></td>
@@ -1310,7 +1309,7 @@ async function showManualMatchDialog(realized) {
               <td>${t.code}</td>
               <td>${t.name||''}</td>
               <td>${t.category}</td>
-              <td>${fmt(t.qty)}</td>
+              <td><strong>${fmt(t.qty)}</strong></td>
               <td>${fmt(t.price,{decimals:2})}</td>
               <td>${fmt(t.marginInterest||0)}</td>
               <td>${fmt(t.shortFee||0)}</td>
@@ -1326,8 +1325,12 @@ async function showManualMatchDialog(realized) {
   const modalPromise = showModal({
     title: `手動配對 - ${realized.code} ${realized.name} ${realized.sellDate} ${fmt(realized.qty)}股`,
     html: `
-      <div style="max-width:780px;min-width:680px">
-        <p class="hint" style="margin-top:0">選一筆投資明細作為這筆已實現損益的對應交易。利息和融券手續費會從那筆讀取。</p>
+      <div style="max-width:820px;min-width:720px">
+        <p class="hint" style="margin-top:0">
+          選一筆投資明細作為這筆已實現損益的對應交易。<br>
+          ⚙️ 系統會自動把「同代號 + 同賣出日 + 同類別」的其他未配對已實現一起併入這個 trade，
+          利息與融券手續費按沖銷成本比例分攤。
+        </p>
         <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
           <input type="checkbox" id="mm-showall"> 顯示全部「賣出融資/融券」紀錄（不限同代號同類別）
         </label>
@@ -1340,7 +1343,6 @@ async function showManualMatchDialog(realized) {
     }
   });
 
-  // modal 渲染後，綁 checkbox 切換顯示
   setTimeout(() => {
     const cb = document.getElementById('mm-showall');
     const listWrap = document.getElementById('mm-list');
@@ -1354,12 +1356,100 @@ async function showManualMatchDialog(realized) {
   const result = await modalPromise;
   if (!result) return;
 
-  realized._manualMatchTradeKey = result;
-  // 重跑 enrichment（會根據 _manualMatchTradeKey 找對應 trade）
+  // 找出對應的 trade
+  const trade = acc.trades.find(t => Parsers.makeTradeKey(t) === result);
+  if (!trade) return toast('找不到對應的投資明細', 'err');
+
+  // 找「同代號 + 同賣出日 + 同類別」的所有未配對已實現（包含這筆）
+  const sameGroup = acc.realized.filter(r =>
+    r.code === realized.code &&
+    r.sellDate === realized.sellDate &&
+    r.sellCategory === realized.sellCategory &&
+    (r === realized || (
+      // 必須是「未手動配對到別的 trade」的（包含未配對 + 自動配對）
+      !r._manualMatchTradeKey ||
+      r._manualMatchTradeKey === result // 已配對到同一個的也納入
+    ))
+  );
+
+  const realizedQty = sameGroup.reduce((s, r) => s + (r.qty || 0), 0);
+  const tradeQty = trade.qty || 0;
+
+  // 數量比對
+  let proceed = true;
+  let willGroup = sameGroup;
+
+  if (realizedQty === tradeQty) {
+    // 完美 → 自動成組
+    if (sameGroup.length > 1) {
+      const ok = await confirmDialog(
+        '自動群組配對',
+        `偵測到「${realized.code} ${realized.sellDate} ${realized.sellCategory}」共有 ${sameGroup.length} 筆已實現（合計 ${fmt(realizedQty)} 股）<br>
+         剛好等於這筆 trade 的 ${fmt(tradeQty)} 股。<br><br>
+         系統會把這 ${sameGroup.length} 筆都配對到同一個 trade，利息 ${fmt(trade.marginInterest||0)} 按比例分攤。<br><br>
+         繼續嗎？`
+      );
+      if (!ok) {
+        // 使用者取消群組 → 改成只配當前這筆
+        const ok2 = await confirmDialog(
+          '只配對這 1 筆？',
+          `這樣只有 ${realized.code} ${realized.sellDate} ${fmt(realized.qty)} 股會配對到此 trade，<br>
+           其他 ${sameGroup.length - 1} 筆仍未配對。利息 ${fmt(trade.marginInterest||0)} 全部給這筆。<br><br>
+           真的要嗎？`
+        );
+        if (!ok2) return;
+        willGroup = [realized];
+      }
+    }
+  } else if (realizedQty < tradeQty) {
+    // 已實現加總不足 → 提示
+    const ok = await confirmDialog(
+      '⚠️ 數量不一致',
+      `這筆 trade 是 <b>${fmt(tradeQty)}</b> 股，但同條件的已實現只加總到 <b>${fmt(realizedQty)}</b> 股（共 ${sameGroup.length} 筆），<br>
+       還差 ${fmt(tradeQty - realizedQty)} 股沒配對。<br><br>
+       仍要強制配對嗎？利息 ${fmt(trade.marginInterest||0)} 會全部分給這 ${sameGroup.length} 筆，<br>
+       會多算（多出去的部分視為已實現本身漏匯）。`
+    );
+    if (!ok) return;
+  } else {
+    // 已實現加總超過 trade → 警告，預設不允許全選
+    const ok = await confirmDialog(
+      '⚠️ 已實現數量超過 trade',
+      `同條件的已實現加總 ${fmt(realizedQty)} 股已超過這筆 trade 的 ${fmt(tradeQty)} 股。<br>
+       資料可能有問題（trade 漏匯或拆分錯誤）。<br><br>
+       仍要把這 ${sameGroup.length} 筆都配對到這 trade 嗎？利息會被稀釋。`
+    );
+    if (!ok) {
+      // 使用者拒絕 → 改成只配當前這筆
+      const ok2 = await confirmDialog(
+        '只配對這 1 筆？',
+        `只把當前的 ${realized.code} ${fmt(realized.qty)} 股配對到此 trade，其他不動。`
+      );
+      if (!ok2) return;
+      willGroup = [realized];
+    }
+  }
+
+  // 套用：把 willGroup 內所有已實現都設定 _manualMatchTradeKey
+  for (const r of willGroup) {
+    r._manualMatchTradeKey = result;
+  }
+  // 不在 willGroup 裡的同條件已實現：清掉 manual link（萬一之前指過別的）
+  if (willGroup !== sameGroup) {
+    for (const r of sameGroup) {
+      if (!willGroup.includes(r) && r._manualMatchTradeKey === result) {
+        delete r._manualMatchTradeKey;
+      }
+    }
+  }
+
+  // 重跑 enrichment（會處理群組分攤）
   Parsers.enrichRealizedWithInterest(acc.realized, acc.trades);
   save();
   renderAll();
-  toast('已手動配對，利息與融券手續費已更新', 'ok');
+  toast(willGroup.length > 1
+    ? `已群組配對 ${willGroup.length} 筆，利息按比例分攤`
+    : '已手動配對', 'ok');
 }
 
 // ============================================================
@@ -1461,6 +1551,104 @@ async function showAdjustDialog(realized) {
   toast('已儲存調整', 'ok');
 }
 
+// ============================================================
+// 編輯 / 刪除已實現損益
+// ============================================================
+async function editRealizedDialog(realized) {
+  const acc = getCurrentAccount();
+  if (!acc) return;
+
+  const result = await showModal({
+    title: `編輯已實現 - ${realized.code} ${realized.name||''}`,
+    html: `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;min-width:560px">
+        <label>代號<input type="text" id="rz-code" value="${realized.code||''}"></label>
+        <label>名稱<input type="text" id="rz-name" value="${(realized.name||'').replace(/"/g,'&quot;')}"></label>
+        <label>類別
+          <select id="rz-cat">
+            <option value="現股" ${realized.sellCategory==='現股'?'selected':''}>現股</option>
+            <option value="融資" ${realized.sellCategory==='融資'?'selected':''}>融資</option>
+            <option value="融券" ${realized.sellCategory==='融券'?'selected':''}>融券</option>
+            <option value="現股當沖" ${realized.sellCategory==='現股當沖'?'selected':''}>現股當沖</option>
+          </select>
+        </label>
+        <label>數量<input type="number" id="rz-qty" value="${realized.qty||0}"></label>
+        <label>賣出日<input type="date" id="rz-selldate" value="${(realized.sellDate||'').replace(/\//g,'-')}"></label>
+        <label>賣價<input type="number" id="rz-sellprice" value="${realized.sellPrice||0}" step="0.01"></label>
+        <label>買進日<input type="date" id="rz-buydate" value="${(realized.buyDate||'').replace(/\//g,'-')}"></label>
+        <label>買價<input type="number" id="rz-buyprice" value="${realized.buyPrice||0}" step="0.01"></label>
+        <label>沖銷成本<input type="number" id="rz-cost" value="${realized.cost||0}"></label>
+        <label>原始盈虧<input type="number" id="rz-pl" value="${realized.pl||0}"></label>
+        <label>手續費<input type="number" id="rz-fee" value="${realized.fee||0}"></label>
+        <label>交易稅<input type="number" id="rz-tax" value="${realized.tax||0}"></label>
+        <label>利息<input type="number" id="rz-interest" value="${realized.interest||0}"></label>
+        <label>融券手續費<input type="number" id="rz-shortfee" value="${realized.shortFee||0}"></label>
+      </div>
+    `,
+    confirmText: '儲存',
+    onConfirm: (body) => ({
+      code: body.querySelector('#rz-code').value.trim(),
+      name: body.querySelector('#rz-name').value.trim(),
+      sellCategory: body.querySelector('#rz-cat').value,
+      qty: parseFloat(body.querySelector('#rz-qty').value) || 0,
+      sellDate: body.querySelector('#rz-selldate').value,
+      sellPrice: parseFloat(body.querySelector('#rz-sellprice').value) || 0,
+      buyDate: body.querySelector('#rz-buydate').value,
+      buyPrice: parseFloat(body.querySelector('#rz-buyprice').value) || 0,
+      cost: parseFloat(body.querySelector('#rz-cost').value) || 0,
+      pl: parseFloat(body.querySelector('#rz-pl').value) || 0,
+      fee: parseFloat(body.querySelector('#rz-fee').value) || 0,
+      tax: parseFloat(body.querySelector('#rz-tax').value) || 0,
+      interest: parseFloat(body.querySelector('#rz-interest').value) || 0,
+      shortFee: parseFloat(body.querySelector('#rz-shortfee').value) || 0
+    })
+  });
+  if (!result) return;
+
+  // 用新值覆蓋
+  realized.code = result.code;
+  realized.name = result.name;
+  realized.sellCategory = result.sellCategory;
+  realized.qty = result.qty;
+  realized.sellDate = Parsers.formatDate(result.sellDate);
+  realized.sellPrice = result.sellPrice;
+  realized.buyDate = result.buyDate ? Parsers.formatDate(result.buyDate) : '';
+  realized.buyPrice = result.buyPrice;
+  realized.cost = result.cost;
+  realized.pl = result.pl;
+  realized.fee = result.fee;
+  realized.tax = result.tax;
+  realized.interest = result.interest;
+  realized.shortFee = result.shortFee;
+  realized._userEdited = true;  // 標記：手動編輯過，匯入時不要被覆蓋
+
+  save();
+  renderAll();
+  toast('已更新', 'ok');
+}
+
+async function deleteRealizedConfirm(realized) {
+  const acc = getCurrentAccount();
+  if (!acc) return;
+  const ok = await confirmDialog(
+    '刪除已實現損益',
+    `確定刪除這筆？<br><br><b>${realized.code} ${realized.name||''}</b><br>${realized.sellDate} 賣出 ${fmt(realized.qty)} 股，盈虧 ${fmt(realized.pl,{sign:true})}<br><br>同時會移除「調整金額/備註」記憶，下次重新匯入該筆時不會自動還原。`
+  );
+  if (!ok) return;
+
+  const idx = acc.realized.indexOf(realized);
+  if (idx < 0) return;
+  acc.realized.splice(idx, 1);
+
+  // 同時清掉 adjustments 紀錄
+  const k = realizedKey(realized);
+  if (acc.adjustments && acc.adjustments[k]) delete acc.adjustments[k];
+
+  save();
+  renderAll();
+  toast('已刪除', 'ok');
+}
+
 function renderRealized() {
   const acc = getCurrentAccount();
   const tb = document.querySelector('#realizedTable tbody');
@@ -1503,18 +1691,21 @@ function renderRealized() {
     const actual = actualPL(r);
     const isMargin = (r.sellCategory === '融資' || r.sellCategory === '融券');
     let rowClass = '';
-    let actionCell = '—';
+    // 配對狀態（只跟融資/融券有關）
+    let matchPart = '';
     if (r._unmatched) {
       rowClass = 'unmatched-row';
-      actionCell = `<button class="btn-mini" data-act="manual-match" data-idx="${realIdx}" style="padding:3px 8px;font-size:11px">🔗 配對</button>`;
+      matchPart = `<button class="btn-mini" data-act="manual-match" data-idx="${realIdx}" style="padding:2px 6px;font-size:11px">🔗</button>`;
     } else if (r._matchSource === 'manual') {
       rowClass = 'manual-match-row';
-      actionCell = `
-        <span class="match-source-tag manual" title="手動配對">手動</span>
-        <button class="btn-mini" data-act="unmatch" data-idx="${realIdx}" style="padding:2px 6px;font-size:10px">解除</button>`;
+      matchPart = `<span class="match-source-tag manual" title="手動配對">手動</span><button class="btn-mini" data-act="unmatch" data-idx="${realIdx}" style="padding:2px 5px;font-size:10px">✕</button>`;
     } else if (isMargin && (r._matchSource === 'auto' || r._matchSource === 'auto-split')) {
-      actionCell = '<span class="match-source-tag auto" title="自動配對">自動</span>';
+      matchPart = '<span class="match-source-tag auto" title="自動配對">自動</span>';
     }
+    // 編輯 + 刪除按鈕（永遠顯示）
+    const editPart = `<button class="btn-mini" data-act="edit-realized" data-idx="${realIdx}" style="padding:2px 6px;font-size:11px" title="編輯">✏️</button>`;
+    const delPart = `<button class="btn-mini danger" data-act="del-realized" data-idx="${realIdx}" style="padding:2px 6px;font-size:11px" title="刪除">🗑️</button>`;
+    const actionCell = `<div style="display:flex;gap:3px;align-items:center;flex-wrap:wrap">${matchPart}${editPart}${delPart}</div>`;
 
     // 調整金額按鈕
     let adjBtnClass = 'adjust-btn';
@@ -1565,6 +1756,8 @@ function renderRealized() {
         toast('已解除手動配對', 'ok');
       }
       else if (act === 'edit-adjust') await showAdjustDialog(r);
+      else if (act === 'edit-realized') await editRealizedDialog(r);
+      else if (act === 'del-realized') await deleteRealizedConfirm(r);
     };
   });
 }
@@ -3693,12 +3886,23 @@ function renderTrades() {
   });
 
   tb.innerHTML = filtered.map((t, i) => {
+    const realIdx = acc.trades.indexOf(t);
     const isConv = (t.category === '資轉現' || t.action === '資轉現');
     const rowStyle = isConv ? 'style="background:rgba(37,99,235,0.06)"' : '';
-    const delBtn = isConv && t._convertId
-      ? `<button class="btn-mini danger" data-act="del-conv" data-cvid="${t._convertId}" style="padding:2px 6px;font-size:11px">刪</button>`
-      : '';
     const noteCell = t.note ? `<span style="color:var(--primary-dark);font-size:12px">${t.note}</span>` : '';
+
+    // 操作按鈕
+    let actions = '';
+    if (isConv && t._convertId) {
+      // 資轉現紀錄：只給「刪除整組」按鈕
+      actions = `<button class="btn-mini danger" data-act="del-conv" data-cvid="${t._convertId}" style="padding:2px 6px;font-size:11px" title="刪除整組（含對應另一筆）">🗑️整組</button>`;
+    } else {
+      actions = `
+        <button class="btn-mini" data-act="edit-trade" data-idx="${realIdx}" style="padding:2px 6px;font-size:11px" title="編輯">✏️</button>
+        <button class="btn-mini danger" data-act="del-trade" data-idx="${realIdx}" style="padding:2px 6px;font-size:11px" title="刪除">🗑️</button>
+      `;
+    }
+
     return `
     <tr ${rowStyle}>
       <td>${t.date}</td>
@@ -3717,24 +3921,146 @@ function renderTrades() {
       <td>${fmt(t.receivable)}</td>
       <td class="${plClass(t.pl)}">${fmt(t.pl, {sign:true})}</td>
       <td>${t.settleDate || noteCell || '—'}</td>
-      <td>${delBtn}</td>
+      <td><div style="display:flex;gap:3px">${actions}</div></td>
     </tr>
     `;
   }).join('') || '<tr><td colspan="17" class="empty-state">沒有符合條件的資料</td></tr>';
 
-  // 刪除資轉現按鈕
-  tb.querySelectorAll('button[data-act="del-conv"]').forEach(btn => {
+  tb.querySelectorAll('button[data-act]').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
-      const cvid = btn.dataset.cvid;
-      const ok = await confirmDialog('刪除資轉現紀錄', '會同時刪除「融資結清」與「現股建倉」兩筆紀錄。確定？');
-      if (!ok) return;
-      acc.trades = acc.trades.filter(t => t._convertId !== cvid);
-      save();
-      renderAll();
-      toast('已刪除資轉現紀錄', 'ok');
+      const act = btn.dataset.act;
+
+      if (act === 'del-conv') {
+        const cvid = btn.dataset.cvid;
+        const ok = await confirmDialog('刪除資轉現紀錄', '會同時刪除「融資結清」與「現股建倉」兩筆紀錄。確定？');
+        if (!ok) return;
+        acc.trades = acc.trades.filter(t => t._convertId !== cvid);
+        save();
+        renderAll();
+        toast('已刪除資轉現紀錄', 'ok');
+      } else if (act === 'edit-trade') {
+        const idx = parseInt(btn.dataset.idx, 10);
+        const t = acc.trades[idx];
+        if (t) await editTradeDialog(t);
+      } else if (act === 'del-trade') {
+        const idx = parseInt(btn.dataset.idx, 10);
+        const t = acc.trades[idx];
+        if (t) await deleteTradeConfirm(t);
+      }
     };
   });
+}
+
+// ============================================================
+// 編輯 / 刪除投資明細
+// ============================================================
+async function editTradeDialog(t) {
+  const result = await showModal({
+    title: `編輯投資明細 - ${t.code} ${t.name||''}`,
+    html: `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;min-width:560px">
+        <label>成交日<input type="date" id="t-date" value="${(t.date||'').replace(/\//g,'-')}"></label>
+        <label>交割日<input type="date" id="t-settle" value="${(t.settleDate||'').replace(/\//g,'-')}"></label>
+        <label>代號<input type="text" id="t-code" value="${t.code||''}"></label>
+        <label>名稱<input type="text" id="t-name" value="${(t.name||'').replace(/"/g,'&quot;')}"></label>
+        <label>買賣
+          <select id="t-action">
+            <option value="買" ${t.action==='買'?'selected':''}>買</option>
+            <option value="賣" ${t.action==='賣'?'selected':''}>賣</option>
+          </select>
+        </label>
+        <label>類別
+          <select id="t-cat">
+            <option value="現股" ${t.category==='現股'?'selected':''}>現股</option>
+            <option value="融資" ${t.category==='融資'?'selected':''}>融資</option>
+            <option value="融券" ${t.category==='融券'?'selected':''}>融券</option>
+            <option value="現股當沖" ${t.category==='現股當沖'?'selected':''}>現股當沖</option>
+          </select>
+        </label>
+        <label>數量<input type="number" id="t-qty" value="${t.qty||0}"></label>
+        <label>單價<input type="number" id="t-price" value="${t.price||0}" step="0.01"></label>
+        <label>價金<input type="number" id="t-amount" value="${t.amount||0}"></label>
+        <label>應收付款<input type="number" id="t-receivable" value="${t.receivable||0}"></label>
+        <label>手續費<input type="number" id="t-fee" value="${t.fee||0}"></label>
+        <label>交易稅<input type="number" id="t-tax" value="${t.tax||0}"></label>
+        <label>融資金額/保證金<input type="number" id="t-margin" value="${t.marginAmount||0}"></label>
+        <label>融資/券利息<input type="number" id="t-interest" value="${t.marginInterest||0}"></label>
+        <label>融券手續費<input type="number" id="t-shortfee" value="${t.shortFee||0}"></label>
+        <label>損益<input type="number" id="t-pl" value="${t.pl||0}"></label>
+        <label style="grid-column:1/-1">備註<input type="text" id="t-note" value="${(t.note||'').replace(/"/g,'&quot;')}"></label>
+      </div>
+    `,
+    confirmText: '儲存',
+    onConfirm: (body) => ({
+      date: body.querySelector('#t-date').value,
+      settleDate: body.querySelector('#t-settle').value,
+      code: body.querySelector('#t-code').value.trim(),
+      name: body.querySelector('#t-name').value.trim(),
+      action: body.querySelector('#t-action').value,
+      category: body.querySelector('#t-cat').value,
+      qty: parseFloat(body.querySelector('#t-qty').value) || 0,
+      price: parseFloat(body.querySelector('#t-price').value) || 0,
+      amount: parseFloat(body.querySelector('#t-amount').value) || 0,
+      receivable: parseFloat(body.querySelector('#t-receivable').value) || 0,
+      fee: parseFloat(body.querySelector('#t-fee').value) || 0,
+      tax: parseFloat(body.querySelector('#t-tax').value) || 0,
+      marginAmount: parseFloat(body.querySelector('#t-margin').value) || 0,
+      marginInterest: parseFloat(body.querySelector('#t-interest').value) || 0,
+      shortFee: parseFloat(body.querySelector('#t-shortfee').value) || 0,
+      pl: parseFloat(body.querySelector('#t-pl').value) || 0,
+      note: body.querySelector('#t-note').value.trim()
+    })
+  });
+  if (!result) return;
+
+  t.date = Parsers.formatDate(result.date);
+  t.settleDate = result.settleDate ? Parsers.formatDate(result.settleDate) : '';
+  t.code = result.code;
+  t.name = result.name;
+  t.action = result.action;
+  t.category = result.category;
+  t.qty = result.qty;
+  t.price = result.price;
+  t.amount = result.amount;
+  t.receivable = result.receivable;
+  t.fee = result.fee;
+  t.tax = result.tax;
+  t.marginAmount = result.marginAmount;
+  t.marginInterest = result.marginInterest;
+  t.shortFee = result.shortFee;
+  t.pl = result.pl;
+  t.note = result.note;
+  t._userEdited = true;
+
+  // 編輯後重跑已實現 ↔ 投資明細 比對
+  const acc = getCurrentAccount();
+  Parsers.enrichRealizedWithInterest(acc.realized, acc.trades);
+
+  save();
+  renderAll();
+  toast('已更新', 'ok');
+}
+
+async function deleteTradeConfirm(t) {
+  const acc = getCurrentAccount();
+  if (!acc) return;
+  const ok = await confirmDialog(
+    '刪除投資明細',
+    `確定刪除這筆？<br><br><b>${t.code} ${t.name||''}</b><br>${t.date} ${t.action} ${t.category} ${fmt(t.qty)}股 @${fmt(t.price,{decimals:2})}<br><br>注意：如果這筆有對應的「已實現損益」配對紀錄，會自動失效需要重新配對。`
+  );
+  if (!ok) return;
+
+  const idx = acc.trades.indexOf(t);
+  if (idx < 0) return;
+  acc.trades.splice(idx, 1);
+
+  // 重跑已實現比對
+  Parsers.enrichRealizedWithInterest(acc.realized, acc.trades);
+
+  save();
+  renderAll();
+  toast('已刪除', 'ok');
 }
 
 // ============================================================
