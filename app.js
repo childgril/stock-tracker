@@ -1189,11 +1189,179 @@ function exportMonthlyExcel() {
 }
 
 // ---------- 已實現損益 ----------
+// ============================================================
+// 已實現 ↔ 投資明細 配對提醒與手動配對
+// ============================================================
+
+// 找出未配對的已實現、沒人引用的賣出投資明細
+function findMatchProblems(acc) {
+  const unmatched = (acc.realized || []).filter(r => r._unmatched);
+
+  // 哪些 trade 已經被引用？
+  const usedTradeKeys = new Set();
+  for (const r of (acc.realized || [])) {
+    if (r._matchedTradeKey) usedTradeKeys.add(r._matchedTradeKey);
+    if (r._manualMatchTradeKey) usedTradeKeys.add(r._manualMatchTradeKey);
+  }
+
+  // 投資明細中「賣出 + 融資/融券」但沒被任何已實現引用的
+  const orphanTrades = (acc.trades || []).filter(t => {
+    if (t.action !== '賣') return false;
+    if (t.category !== '融資' && t.category !== '融券') return false;
+    return !usedTradeKeys.has(Parsers.makeTradeKey(t));
+  });
+
+  return { unmatched, orphanTrades };
+}
+
+function renderMatchAlerts(acc) {
+  const wrap = document.getElementById('matchAlerts');
+  if (!wrap) return;
+  const { unmatched, orphanTrades } = findMatchProblems(acc);
+
+  if (!unmatched.length && !orphanTrades.length) {
+    wrap.innerHTML = '';
+    return;
+  }
+
+  let html = '<div class="match-alert">';
+
+  if (unmatched.length > 0) {
+    html += `⚠️ 有 <strong>${unmatched.length}</strong> 筆已實現損益（融資/融券）找不到對應的投資明細，
+             利息或融券手續費可能不準確。請點該列右側「🔗 配對」手動指定。`;
+  }
+
+  if (orphanTrades.length > 0) {
+    html += unmatched.length > 0 ? '<br>' : '';
+    html += `❓ 投資明細中有 <strong>${orphanTrades.length}</strong> 筆「賣出融資/融券」沒有對應的已實現損益（可能是已實現損益沒匯入完整）。`;
+    html += `<details><summary>展開查看這些投資明細</summary>
+      <table class="alert-table">
+        <thead><tr><th>日期</th><th>代號</th><th>名稱</th><th>類別</th><th>數量</th><th>單價</th><th>利息</th><th>融券手續費</th></tr></thead>
+        <tbody>`;
+    for (const t of orphanTrades) {
+      html += `<tr>
+        <td>${t.date}</td>
+        <td>${t.code}</td>
+        <td>${t.name||''}</td>
+        <td>${t.category}</td>
+        <td>${fmt(t.qty)}</td>
+        <td>${fmt(t.price,{decimals:2})}</td>
+        <td>${fmt(t.marginInterest||0)}</td>
+        <td>${fmt(t.shortFee||0)}</td>
+      </tr>`;
+    }
+    html += '</tbody></table></details>';
+  }
+
+  html += '</div>';
+  wrap.innerHTML = html;
+}
+
+// 手動配對對話框
+async function showManualMatchDialog(realized) {
+  const acc = getCurrentAccount();
+  if (!acc) return;
+
+  // 候選清單：所有「賣出融資/融券」的投資明細
+  const allCandidates = (acc.trades || []).filter(t =>
+    t.action === '賣' && (t.category === '融資' || t.category === '融券')
+  );
+  const sameCodeCategory = allCandidates.filter(t =>
+    t.code === realized.code && t.category === realized.sellCategory
+  );
+
+  if (allCandidates.length === 0) {
+    return toast('投資明細裡沒有任何「賣出融資/融券」紀錄可配對', 'err');
+  }
+
+  // 哪些已被其他已實現引用？
+  const usedKeys = new Set();
+  for (const r of acc.realized) {
+    if (r === realized) continue;
+    if (r._matchedTradeKey) usedKeys.add(r._matchedTradeKey);
+    if (r._manualMatchTradeKey) usedKeys.add(r._manualMatchTradeKey);
+  }
+
+  const buildListHTML = (showAll) => {
+    const list = showAll ? allCandidates : sameCodeCategory;
+    if (!list.length) return '<div class="empty-state" style="padding:20px">沒有同代號同類別的賣出紀錄。請勾選「顯示全部」</div>';
+    return `
+      <table class="alert-table">
+        <thead><tr><th>選</th><th>日期</th><th>代號</th><th>名稱</th><th>類別</th><th>數量</th><th>單價</th><th>利息</th><th>融券費</th><th>狀態</th></tr></thead>
+        <tbody>
+        ${list.map(t => {
+          const k = Parsers.makeTradeKey(t);
+          const used = usedKeys.has(k);
+          const isCurrent = (realized._manualMatchTradeKey === k);
+          const disabled = used && !isCurrent ? 'disabled' : '';
+          const stateColor = used ? 'color:#aaa' : isCurrent ? 'color:#22c55e;font-weight:600' : '';
+          const stateText = used ? '已被引用' : isCurrent ? '目前配對' : '可選';
+          return `
+            <tr style="${used && !isCurrent ? 'opacity:0.4' : ''}">
+              <td><input type="radio" name="match-pick" value="${k}" ${isCurrent?'checked':''} ${disabled}></td>
+              <td>${t.date}</td>
+              <td>${t.code}</td>
+              <td>${t.name||''}</td>
+              <td>${t.category}</td>
+              <td>${fmt(t.qty)}</td>
+              <td>${fmt(t.price,{decimals:2})}</td>
+              <td>${fmt(t.marginInterest||0)}</td>
+              <td>${fmt(t.shortFee||0)}</td>
+              <td style="${stateColor}">${stateText}</td>
+            </tr>
+          `;
+        }).join('')}
+        </tbody>
+      </table>
+    `;
+  };
+
+  const modalPromise = showModal({
+    title: `手動配對 - ${realized.code} ${realized.name} ${realized.sellDate} ${fmt(realized.qty)}股`,
+    html: `
+      <div style="max-width:780px;min-width:680px">
+        <p class="hint" style="margin-top:0">選一筆投資明細作為這筆已實現損益的對應交易。利息和融券手續費會從那筆讀取。</p>
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <input type="checkbox" id="mm-showall"> 顯示全部「賣出融資/融券」紀錄（不限同代號同類別）
+        </label>
+        <div id="mm-list">${buildListHTML(false)}</div>
+      </div>
+    `,
+    onConfirm: (body) => {
+      const picked = body.querySelector('input[name="match-pick"]:checked');
+      return picked ? picked.value : null;
+    }
+  });
+
+  // modal 渲染後，綁 checkbox 切換顯示
+  setTimeout(() => {
+    const cb = document.getElementById('mm-showall');
+    const listWrap = document.getElementById('mm-list');
+    if (cb && listWrap) {
+      cb.onchange = () => {
+        listWrap.innerHTML = buildListHTML(cb.checked);
+      };
+    }
+  }, 0);
+
+  const result = await modalPromise;
+  if (!result) return;
+
+  realized._manualMatchTradeKey = result;
+  // 重跑 enrichment（會根據 _manualMatchTradeKey 找對應 trade）
+  Parsers.enrichRealizedWithInterest(acc.realized, acc.trades);
+  save();
+  renderAll();
+  toast('已手動配對，利息與融券手續費已更新', 'ok');
+}
+
 function renderRealized() {
   const acc = getCurrentAccount();
   const tb = document.querySelector('#realizedTable tbody');
+  const alertWrap = document.getElementById('matchAlerts');
+  if (alertWrap) alertWrap.innerHTML = '';
   if (!acc || !acc.realized.length) {
-    tb.innerHTML = '<tr><td colspan="17" class="empty-state">尚無已實現損益資料</td></tr>';
+    tb.innerHTML = '<tr><td colspan="18" class="empty-state">尚無已實現損益資料</td></tr>';
     setVal('rzOriginal','—'); setVal('rzAdjust','—'); setVal('rzActual','—');
     setVal('rzInterest','—'); setVal('rzShortFee','—');
     return;
@@ -1220,11 +1388,28 @@ function renderRealized() {
   setVal('rzInterest', interest);
   setVal('rzShortFee', shortFee);
 
+  // 渲染配對提醒
+  renderMatchAlerts(acc);
+
   tb.innerHTML = filtered.map((r, idx) => {
     const realIdx = acc.realized.indexOf(r);
     const actualPL = r.pl + (r.adjust || 0);
+    const isMargin = (r.sellCategory === '融資' || r.sellCategory === '融券');
+    let rowClass = '';
+    let actionCell = '—';
+    if (r._unmatched) {
+      rowClass = 'unmatched-row';
+      actionCell = `<button class="btn-mini" data-act="manual-match" data-idx="${realIdx}" style="padding:3px 8px;font-size:11px">🔗 配對</button>`;
+    } else if (r._matchSource === 'manual') {
+      rowClass = 'manual-match-row';
+      actionCell = `
+        <span class="match-source-tag manual" title="手動配對">手動</span>
+        <button class="btn-mini" data-act="unmatch" data-idx="${realIdx}" style="padding:2px 6px;font-size:10px">解除</button>`;
+    } else if (isMargin && (r._matchSource === 'auto' || r._matchSource === 'auto-split')) {
+      actionCell = '<span class="match-source-tag auto" title="自動配對">自動</span>';
+    }
     return `
-      <tr data-idx="${realIdx}">
+      <tr data-idx="${realIdx}" class="${rowClass}">
         <td>${r.code}</td>
         <td>${r.name}</td>
         <td>${r.sellCategory}</td>
@@ -1242,6 +1427,7 @@ function renderRealized() {
         <td><input type="text" class="editable-cell note" data-field="note" value="${(r.note || '').replace(/"/g,'&quot;')}" placeholder="備註…"></td>
         <td class="${plClass(r.pl)}">${fmt(r.pl, {sign:true})}</td>
         <td class="hl ${plClass(actualPL)}">${fmt(actualPL, {sign:true})}</td>
+        <td>${actionCell}</td>
       </tr>
     `;
   }).join('');
@@ -1266,6 +1452,25 @@ function renderRealized() {
       renderOverview();
       renderAccount();
     });
+  });
+
+  // 綁定配對按鈕
+  tb.querySelectorAll('button[data-act]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.idx, 10);
+      const r = acc.realized[idx];
+      if (!r) return;
+      if (btn.dataset.act === 'manual-match') await showManualMatchDialog(r);
+      else if (btn.dataset.act === 'unmatch') {
+        delete r._manualMatchTradeKey;
+        // 重跑 enrichment
+        Parsers.enrichRealizedWithInterest(acc.realized, acc.trades);
+        save();
+        renderAll();
+        toast('已解除手動配對', 'ok');
+      }
+    };
   });
 }
 

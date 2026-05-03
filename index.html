@@ -227,6 +227,10 @@
     <input type="text" id="rzSearch" placeholder="🔍 搜尋代號或名稱…">
     <button class="btn-mini" id="btnExportRealized">📊 匯出 Excel</button>
   </div>
+
+  <!-- 配對提醒區（未配對才顯示） -->
+  <div id="matchAlerts"></div>
+
   <div class="table-scroll">
     <table class="data-table" id="realizedTable">
       <thead><tr>
@@ -240,6 +244,7 @@
         <th>備註</th>
         <th>盈虧</th>
         <th class="hl">實際盈虧</th>
+        <th>配對</th>
       </tr></thead>
       <tbody></tbody>
     </table>

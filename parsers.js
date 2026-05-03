@@ -33,6 +33,11 @@ const Parsers = (() => {
     return { code: '', name: str };
   }
 
+  // 投資明細的唯一鍵（給已實現損益做配對用）
+  function makeTradeKey(t) {
+    return `${t.date}|${t.code}|${t.action}|${t.category}|${t.qty}|${t.price}`;
+  }
+
   function formatDate(d) {
     if (!d) return '';
     if (typeof d === 'string') {
@@ -637,17 +642,33 @@ const Parsers = (() => {
   function enrichRealizedWithInterest(realizedItems, tradeItems) {
     // 1. 先把所有列重設為 0；新光（_preInterest 存在）直接用預設值
     for (const r of realizedItems) {
+      // 手動指定的：直接從 trades 裡的對應交易讀取，跳過自動比對
+      if (r._manualMatchTradeKey) {
+        const matched = tradeItems.find(t => makeTradeKey(t) === r._manualMatchTradeKey);
+        if (matched) {
+          r.interest = matched.marginInterest || 0;
+          r.shortFee = matched.shortFee || 0;
+          r._unmatched = false;
+          r._matchSource = 'manual';
+          continue;
+        }
+        // 找不到對應 trade（被刪了）→ 清除 manual link，走自動流程
+        delete r._manualMatchTradeKey;
+      }
       if (r._preInterest != null || r._preShortFee != null) {
         // 新光：直接用已實現表上的數字
         r.interest = r._preInterest || 0;
         r.shortFee = r._preShortFee || 0;
         r._unmatched = false;
+        r._matchSource = 'preset';
         continue;
       }
       if (r.sellCategory !== '融資' && r.sellCategory !== '融券') {
         r.interest = 0; r.shortFee = 0; r._unmatched = false;
+        r._matchSource = 'cash';
       } else {
         r.interest = 0; r.shortFee = 0; r._unmatched = true;
+        r._matchSource = null;
       }
     }
 
@@ -719,6 +740,8 @@ const Parsers = (() => {
           consumed[0].interest = interest;
           consumed[0].shortFee = sFee;
           consumed[0]._unmatched = false;
+          consumed[0]._matchSource = 'auto';
+          consumed[0]._matchedTradeKey = makeTradeKey(trade);
           matched++;
         } else {
           let allocatedI = 0, allocatedS = 0;
@@ -735,6 +758,8 @@ const Parsers = (() => {
               allocatedS += r.shortFee;
             }
             r._unmatched = false;
+            r._matchSource = 'auto-split';
+            r._matchedTradeKey = makeTradeKey(trade);
             matched++;
           }
         }
@@ -832,6 +857,7 @@ const Parsers = (() => {
     parseDividendsFromText,
     enrichRealizedWithInterest,
     detectFormat,
+    makeTradeKey,
     toNumber,
     toString,
     formatDate
