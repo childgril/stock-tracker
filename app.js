@@ -658,9 +658,50 @@ function renderPeriodInfo() {
   const accRange = acc ? getDateRange([acc]) : { min: null, max: null };
   const accHtml = formatPeriodHTML(accRange);
 
-  // 總覽用「全部帳戶」
-  const allRange = getDateRange(State.data.accounts || []);
-  const allHtml = formatPeriodHTML(allRange);
+  // 總覽用「全部帳戶」+ 可展開的各帳戶清單
+  const accounts = State.data.accounts || [];
+  const allRange = getDateRange(accounts);
+  let allHtml = formatPeriodHTML(allRange);
+
+  // 多於 1 個帳戶才顯示展開按鈕
+  if (accounts.length > 1) {
+    const isOpen = State._periodExpanded === true;
+    allHtml += `
+      <button class="period-toggle" id="periodToggleBtn" title="展開/收合各帳戶期間">
+        ${isOpen ? '▲ 收合各帳戶' : '▼ 各帳戶期間'}
+      </button>
+    `;
+    if (isOpen) {
+      // 各帳戶期間卡片
+      const items = accounts.map(a => {
+        const r = getDateRange([a]);
+        let days = '';
+        if (r.min && r.max) {
+          try {
+            const d1 = new Date(r.min.replace(/\//g, '-'));
+            const d2 = new Date(r.max.replace(/\//g, '-'));
+            if (!isNaN(d1) && !isNaN(d2)) {
+              days = `${Math.round((d2 - d1) / 86400000) + 1} 天`;
+            }
+          } catch (e) {}
+        }
+        const rangeText = (r.min && r.max) ? `${r.min} ～ ${r.max}` : '尚無資料';
+        return `
+          <li class="period-item">
+            <div class="acc-name">${a.name || '未命名'}</div>
+            <div class="acc-range">${rangeText}</div>
+            ${days ? `<div class="acc-days">${days}</div>` : ''}
+          </li>
+        `;
+      }).join('');
+      allHtml += `
+        <div class="period-detail-popup">
+          <div class="period-detail-title">各帳戶交易期間</div>
+          <ul class="period-detail-list">${items}</ul>
+        </div>
+      `;
+    }
+  }
 
   // 各 section 對應
   const map = {
@@ -677,6 +718,16 @@ function renderPeriodInfo() {
   for (const [id, html] of Object.entries(map)) {
     const el = document.getElementById(id);
     if (el) el.innerHTML = html;
+  }
+
+  // 綁定展開按鈕
+  const toggleBtn = document.getElementById('periodToggleBtn');
+  if (toggleBtn) {
+    toggleBtn.onclick = (e) => {
+      e.stopPropagation();
+      State._periodExpanded = !State._periodExpanded;
+      renderPeriodInfo();
+    };
   }
 }
 
@@ -919,6 +970,7 @@ function renderAccount() {
   lines.push(`<p class="hint">未實現損益：<strong>${acc.unrealized.length}</strong> 檔（快照日 ${acc.unrealizedSnapshotDate || '—'}）　|　投資明細：<strong>${acc.trades.length}</strong> 筆　|　已實現損益：<strong>${acc.realized.length}</strong> 筆　|　歷史快照：<strong>${(acc.snapshots||[]).length}</strong> 筆　|　借款：<strong>${(acc.loans||[]).length}</strong> 筆</p>`);
   status.innerHTML = lines.join('');
 
+  renderMonthCompare();
   renderMonthly();
   renderDayTrades();
   renderStockAnalysis();
@@ -1010,6 +1062,278 @@ function buildMonthlyData(acc) {
   }
 
   return [...months.values()].sort((a, b) => b.key.localeCompare(a.key));
+}
+
+// ============================================================
+// 月份比較分析
+// ============================================================
+// 把 buildMonthlyData 的結果加上當沖損益（不在月資料裡）
+function buildMonthlyDataWithDayTrade(acc) {
+  const months = buildMonthlyData(acc);
+  // 當沖按月加總
+  const dtByMonth = new Map();
+  for (const dt of analyzeDayTrades(acc)) {
+    const mKey = (dt.date || '').slice(0, 7).replace('/', '-');
+    if (!mKey) continue;
+    if (!dtByMonth.has(mKey)) dtByMonth.set(mKey, 0);
+    dtByMonth.set(mKey, dtByMonth.get(mKey) + (dt.netPL || 0));
+  }
+  for (const m of months) {
+    m.dayTradePL = dtByMonth.get(m.key) || 0;
+  }
+  return months;
+}
+
+// 取得指標的顯示名稱
+function cmpMetricLabel(metric) {
+  const map = {
+    actual: '實際損益',
+    realizedPL: '已實現損益',
+    interest: '融資利息',
+    shortFee: '融券手續費',
+    dividendCash: '現金股利',
+    adjust: '調整金額',
+    dayTradePL: '當沖損益',
+    tradeAmount: '總成交金額'
+  };
+  return map[metric] || metric;
+}
+
+// 把月份 key 'YYYY-MM' 變成顯示用的 '2024 年 6 月'
+function fmtMonthLabel(key) {
+  const m = (key || '').match(/^(\d{4})-(\d{2})$/);
+  if (!m) return key;
+  return `${m[1]} 年 ${parseInt(m[2])} 月`;
+}
+
+// 計算變化百分比
+function calcChange(current, base) {
+  const diff = current - base;
+  let pct = null;
+  if (base !== 0) {
+    pct = (diff / Math.abs(base)) * 100;
+  }
+  return { diff, pct };
+}
+
+// 渲染變化箭頭儲存格
+function renderChangeCell(diff, pct, options = {}) {
+  const lowerIsBetter = options.lowerIsBetter || false;
+  const isUp = diff > 0;
+  const isFlat = diff === 0;
+  // 預設情境：上升=綠色（好），下降=紅色（壞）
+  // 若指標是「越低越好」（如利息、手續費），則反轉
+  let cls;
+  if (isFlat) cls = 'flat';
+  else if ((isUp && !lowerIsBetter) || (!isUp && lowerIsBetter)) cls = 'up';
+  else cls = 'down';
+
+  const icon = isFlat ? '—' : (isUp ? '▲' : '▼');
+  const pctStr = pct === null ? '—' : `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
+  const diffStr = fmt(diff, { sign: true });
+
+  // 視覺化條（依 |pct| 寬度，最大 100%）
+  let bar = '';
+  if (pct !== null && !isFlat) {
+    const w = Math.min(50, Math.abs(pct) / 2); // pct 50% 滿條
+    const fillStyle = isUp
+      ? `width:${w}%; left:50%`
+      : `width:${w}%; right:50%; left:auto`;
+    bar = `<span class="cmp-bar"><span class="fill ${cls}" style="${fillStyle}"></span></span>`;
+  }
+
+  return `
+    <div class="cmp-arrow ${cls}">
+      <span class="icon">${icon}</span>
+      <span>${diffStr}</span>
+      <span style="font-size:11px;opacity:0.85">(${pctStr})</span>
+    </div>
+  `;
+}
+
+// 取資料表中某月的指標數值
+function getMetricValue(monthData, metric) {
+  if (!monthData) return 0;
+  return monthData[metric] || 0;
+}
+
+// 三種比較模式產生「比較對」清單：[{label, current: monthData, base: monthData, baseLabel}]
+function buildComparePairs(months, mode, options = {}) {
+  const pairs = [];
+  if (!months.length) return pairs;
+
+  // months 已從新到舊排序
+  const byKey = new Map(months.map(m => [m.key, m]));
+
+  if (mode === 'yearly') {
+    // 年度跨月：每個月找去年同月
+    for (const m of months) {
+      const [y, mo] = m.key.split('-').map(Number);
+      const prevKey = `${y - 1}-${String(mo).padStart(2, '0')}`;
+      const base = byKey.get(prevKey);
+      if (base) {
+        pairs.push({
+          currentLabel: fmtMonthLabel(m.key),
+          baseLabel: fmtMonthLabel(prevKey),
+          current: m,
+          base
+        });
+      }
+    }
+  } else if (mode === 'consecutive') {
+    // 連續月：每個月跟前一個月（按時間連續，跨年也算）
+    for (let i = 0; i < months.length - 1; i++) {
+      const cur = months[i];
+      const prev = months[i + 1];  // months 是新到舊，所以 i+1 是更舊的
+      pairs.push({
+        currentLabel: fmtMonthLabel(cur.key),
+        baseLabel: fmtMonthLabel(prev.key),
+        current: cur,
+        base: prev
+      });
+    }
+  } else if (mode === 'custom') {
+    // 自選：options.monthA / options.monthB
+    const a = byKey.get(options.monthA);
+    const b = byKey.get(options.monthB);
+    if (a && b) {
+      pairs.push({
+        currentLabel: fmtMonthLabel(options.monthA),
+        baseLabel: fmtMonthLabel(options.monthB),
+        current: a,
+        base: b
+      });
+    }
+  }
+
+  return pairs;
+}
+
+// 哪些指標「越低越好」？
+const LOWER_IS_BETTER_METRICS = new Set(['interest', 'shortFee']);
+
+function renderMonthCompare() {
+  const acc = getCurrentAccount();
+  const wrap = document.getElementById('monthCompareArea');
+  if (!wrap) return;
+
+  if (!acc) {
+    wrap.innerHTML = '<div class="cmp-empty">尚未選擇帳戶</div>';
+    return;
+  }
+
+  const mode = document.getElementById('cmpMode')?.value || 'yearly';
+  const metric = document.getElementById('cmpMetric')?.value || 'actual';
+  const monthASel = document.getElementById('cmpMonthA');
+  const monthBSel = document.getElementById('cmpMonthB');
+
+  const months = buildMonthlyDataWithDayTrade(acc);
+
+  // 自選模式：填月份下拉並顯示
+  if (mode === 'custom') {
+    if (monthASel) monthASel.style.display = '';
+    if (monthBSel) monthBSel.style.display = '';
+    // 重建選項（保留現選）
+    const cur = monthASel?.value || '';
+    const cur2 = monthBSel?.value || '';
+    if (monthASel) {
+      monthASel.innerHTML = '<option value="">A 月份…</option>' +
+        months.map(m => `<option value="${m.key}" ${m.key===cur?'selected':''}>${fmtMonthLabel(m.key)}</option>`).join('');
+    }
+    if (monthBSel) {
+      monthBSel.innerHTML = '<option value="">B 月份…</option>' +
+        months.map(m => `<option value="${m.key}" ${m.key===cur2?'selected':''}>${fmtMonthLabel(m.key)}</option>`).join('');
+    }
+  } else {
+    if (monthASel) monthASel.style.display = 'none';
+    if (monthBSel) monthBSel.style.display = 'none';
+  }
+
+  if (!months.length) {
+    wrap.innerHTML = '<div class="cmp-empty">尚無資料可比較。請先匯入已實現損益或投資明細</div>';
+    return;
+  }
+
+  const pairs = buildComparePairs(months, mode, {
+    monthA: monthASel?.value || '',
+    monthB: monthBSel?.value || ''
+  });
+
+  if (!pairs.length) {
+    if (mode === 'custom') {
+      wrap.innerHTML = '<div class="cmp-empty">請從上方選擇兩個月份來比較</div>';
+    } else if (mode === 'yearly') {
+      wrap.innerHTML = '<div class="cmp-empty">沒有「同月份不同年」的可比資料（至少要有兩年的同月份資料）</div>';
+    } else {
+      wrap.innerHTML = '<div class="cmp-empty">至少要有兩個月的資料才能做連續月比較</div>';
+    }
+    return;
+  }
+
+  const lowerIsBetter = LOWER_IS_BETTER_METRICS.has(metric);
+  const metricName = cmpMetricLabel(metric);
+
+  // 建表
+  const headerLabel = mode === 'yearly' ? '本月 vs 去年同月'
+                    : mode === 'consecutive' ? '本月 vs 上月'
+                    : '比較';
+
+  let html = `
+    <div class="hint" style="margin:-4px 0 8px;font-size:12px">
+      📈 ${metricName}　${lowerIsBetter ? '（越低越好，下降以綠色顯示）' : '（越高越好，上升以綠色顯示）'}
+    </div>
+    <table class="cmp-table">
+      <thead><tr>
+        <th>${mode === 'custom' ? 'A 月份' : '本月'}</th>
+        <th>${metricName}（A）</th>
+        <th>${mode === 'custom' ? 'B 月份' : (mode === 'yearly' ? '去年同月' : '上月')}</th>
+        <th>${metricName}（B）</th>
+        <th>變化</th>
+      </tr></thead>
+      <tbody>
+  `;
+
+  for (const p of pairs) {
+    const curVal = getMetricValue(p.current, metric);
+    const baseVal = getMetricValue(p.base, metric);
+    const { diff, pct } = calcChange(curVal, baseVal);
+    const curCls = curVal > 0 ? 'pos' : (curVal < 0 ? 'neg' : '');
+    const baseCls = baseVal > 0 ? 'pos' : (baseVal < 0 ? 'neg' : '');
+
+    html += `
+      <tr>
+        <td><div class="cmp-period">${p.currentLabel}</div></td>
+        <td class="${curCls}">${fmt(curVal, { sign: true })}</td>
+        <td><div class="cmp-period">${p.baseLabel}</div></td>
+        <td class="${baseCls}">${fmt(baseVal, { sign: true })}</td>
+        <td>${renderChangeCell(diff, pct, { lowerIsBetter })}</td>
+      </tr>
+    `;
+  }
+
+  // 摘要列：總和（自選模式不顯示）
+  if (pairs.length > 1) {
+    let sumCur = 0, sumBase = 0;
+    for (const p of pairs) {
+      sumCur += getMetricValue(p.current, metric);
+      sumBase += getMetricValue(p.base, metric);
+    }
+    const { diff, pct } = calcChange(sumCur, sumBase);
+    const curCls = sumCur > 0 ? 'pos' : (sumCur < 0 ? 'neg' : '');
+    const baseCls = sumBase > 0 ? 'pos' : (sumBase < 0 ? 'neg' : '');
+    html += `
+      <tr style="background:var(--surface-2);font-weight:600">
+        <td>合計（${pairs.length} 組）</td>
+        <td class="${curCls}">${fmt(sumCur, { sign: true })}</td>
+        <td>—</td>
+        <td class="${baseCls}">${fmt(sumBase, { sign: true })}</td>
+        <td>${renderChangeCell(diff, pct, { lowerIsBetter })}</td>
+      </tr>
+    `;
+  }
+
+  html += `</tbody></table>`;
+  wrap.innerHTML = html;
 }
 
 const _expandedMonths = new Set();
@@ -2523,14 +2847,14 @@ function renderStockAnalysis() {
   const tb = document.querySelector('#stockTable tbody');
   if (!tb) return;
   if (!acc) {
-    tb.innerHTML = '<tr><td colspan="18" class="empty-state">尚未選擇帳戶</td></tr>';
+    tb.innerHTML = '<tr><td colspan="8" class="empty-state">尚未選擇帳戶</td></tr>';
     renderStockAnalyticsCards(null);
     return;
   }
 
   // 沒有任何資料時提示先匯入
   if (!acc.trades.length && !acc.realized.length && !acc.unrealized.length) {
-    tb.innerHTML = '<tr><td colspan="18" class="empty-state">尚無資料。請先到「⬆️ 匯入資料」匯入投資明細、已實現損益或未實現損益</td></tr>';
+    tb.innerHTML = '<tr><td colspan="8" class="empty-state">尚無資料。請先到「⬆️ 匯入資料」匯入投資明細、已實現損益或未實現損益</td></tr>';
     renderStockAnalyticsCards(null);
     return;
   }
@@ -2543,7 +2867,7 @@ function renderStockAnalysis() {
 
   // 完全沒解析到任何股票
   if (!stocks.length) {
-    tb.innerHTML = '<tr><td colspan="18" class="empty-state">資料解析後沒有股票（請檢查匯入的資料）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="8" class="empty-state">資料解析後沒有股票（請檢查匯入的資料）</td></tr>';
     return;
   }
 
@@ -2562,7 +2886,7 @@ function renderStockAnalysis() {
   });
 
   if (!stocks.length) {
-    tb.innerHTML = `<tr><td colspan="18" class="empty-state">沒有符合條件的股票（總共 ${totalCount} 檔，請放寬搜尋或篩選）</td></tr>`;
+    tb.innerHTML = `<tr><td colspan="8" class="empty-state">沒有符合條件的股票（總共 ${totalCount} 檔，請放寬搜尋或篩選）</td></tr>`;
     return;
   }
 
@@ -2571,30 +2895,30 @@ function renderStockAnalysis() {
     const expanded = _expandedStocks.has(s.code);
     const holdingTag = s.holding ? `<span class="year-tag" style="background:var(--success-light);color:var(--success)">持有 ${fmt(s.currentQty)}</span>` : '';
     const dt = dtByCode.get(s.code);
+
+    // 報酬率（用累計買進金額作為基數）
+    let rateStr = '—';
+    let rateClass = '';
+    if (s.buyAmount > 0) {
+      const r = (s.actualPL / s.buyAmount) * 100;
+      rateStr = (r > 0 ? '+' : '') + r.toFixed(2) + '%';
+      rateClass = plClass(r);
+    }
+
     rows.push(`
       <tr class="month-row" data-code="${s.code}">
         <td><span class="month-toggle ${expanded?'expanded':''}">▶</span></td>
         <td><strong>${s.code}</strong></td>
         <td>${s.name||''} ${holdingTag}</td>
-        <td>${s.buyCount}/${s.sellCount}</td>
-        <td>${s.realizedCount}</td>
-        <td>${s.avgBuyPrice ? fmt(s.avgBuyPrice, {decimals:2}) : '—'}</td>
-        <td>${s.avgSellPrice ? fmt(s.avgSellPrice, {decimals:2}) : '—'}</td>
         <td>${s.holding ? fmt(s.currentQty) : '—'}</td>
-        <td>${fmt(s.buyAmount)}</td>
-        <td>${fmt(s.sellAmount)}</td>
         <td class="${plClass(s.realizedPL)}">${fmt(s.realizedPL,{sign:true})}</td>
-        <td>${fmt(s.interest)}</td>
-        <td>${fmt(s.shortFee)}</td>
         <td class="hl ${plClass(s.actualPL)}"><strong>${fmt(s.actualPL,{sign:true})}</strong></td>
-        <td class="${plClass(s.avgRate)}">${s.avgRate ? fmtPct(s.avgRate) : '—'}</td>
-        <td class="hl">${dt ? dt.count : '—'}</td>
+        <td class="${rateClass}">${rateStr}</td>
         <td class="hl ${dt?plClass(dt.netPL):''}">${dt ? fmt(dt.netPL,{sign:true}) : '—'}</td>
-        <td class="hl ${dt && dt.winRate>=50?'pos':(dt && dt.winRate<50?'neg':'')}">${dt ? dt.winRate.toFixed(1)+'%' : '—'}</td>
       </tr>
     `);
     if (expanded) {
-      rows.push(`<tr class="month-detail-row"><td colspan="18">${renderStockDetail(s)}</td></tr>`);
+      rows.push(`<tr class="month-detail-row"><td colspan="8">${renderStockDetail(s, dt)}</td></tr>`);
     }
   }
   tb.innerHTML = rows.join('');
@@ -2608,8 +2932,67 @@ function renderStockAnalysis() {
   });
 }
 
-function renderStockDetail(s) {
+function renderStockDetail(s, dt) {
   const html = [];
+  const interestSum = (s.interest || 0) + (s.shortFee || 0);
+  const buyPrice = s.avgBuyPrice ? fmt(s.avgBuyPrice, {decimals:2}) : '—';
+  const sellPrice = s.avgSellPrice ? fmt(s.avgSellPrice, {decimals:2}) : '—';
+
+  // 上方：完整指標卡片（精簡主表沒顯示的欄位都放這裡）
+  html.push(`
+    <div class="stock-detail-panel">
+      <div class="indicator">
+        <div class="label">進出筆數</div>
+        <div class="value">${s.buyCount} 買 / ${s.sellCount} 賣</div>
+      </div>
+      <div class="indicator">
+        <div class="label">已實現次數</div>
+        <div class="value">${s.realizedCount}</div>
+      </div>
+      <div class="indicator">
+        <div class="label">平均買價</div>
+        <div class="value">${buyPrice}</div>
+      </div>
+      <div class="indicator">
+        <div class="label">平均賣價</div>
+        <div class="value">${sellPrice}</div>
+      </div>
+      <div class="indicator">
+        <div class="label">累計買進</div>
+        <div class="value">${fmt(s.buyAmount)}</div>
+      </div>
+      <div class="indicator">
+        <div class="label">累計賣出</div>
+        <div class="value">${fmt(s.sellAmount)}</div>
+      </div>
+      <div class="indicator">
+        <div class="label">融資利息</div>
+        <div class="value">${fmt(s.interest||0)}</div>
+      </div>
+      <div class="indicator">
+        <div class="label">融券手續費</div>
+        <div class="value">${fmt(s.shortFee||0)}</div>
+      </div>
+      <div class="indicator">
+        <div class="label">利息+融券費</div>
+        <div class="value">${interestSum ? fmt(interestSum) : '—'}</div>
+      </div>
+      ${dt ? `
+        <div class="indicator">
+          <div class="label">當沖筆數</div>
+          <div class="value">${dt.count}</div>
+        </div>
+        <div class="indicator">
+          <div class="label">當沖勝率</div>
+          <div class="value ${dt.winRate>=50?'pos':'neg'}">${dt.winRate.toFixed(1)}%</div>
+        </div>
+        <div class="indicator">
+          <div class="label">當沖損益</div>
+          <div class="value ${plClass(dt.netPL)}">${fmt(dt.netPL,{sign:true})}</div>
+        </div>
+      ` : ''}
+    </div>
+  `);
 
   // 該股已實現
   if (s.realizedItems.length > 0) {
@@ -4179,6 +4562,12 @@ function bindEvents() {
   // 每月損益
   bindChange('monthlyYear', renderMonthly);
   bindClick('btnExportMonthly', exportMonthlyExcel);
+
+  // 月份比較分析
+  bindChange('cmpMode', renderMonthCompare);
+  bindChange('cmpMetric', renderMonthCompare);
+  bindChange('cmpMonthA', renderMonthCompare);
+  bindChange('cmpMonthB', renderMonthCompare);
 
   // 個股損益分析
   bindInput('stockSearch', renderStockAnalysis);

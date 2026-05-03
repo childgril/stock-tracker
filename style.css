@@ -370,6 +370,26 @@ button {
   text-align: left;
 }
 
+/* 緊湊表格：用更小 padding 和字級，給欄位多的表格用 */
+.data-table.compact th, .data-table.compact td {
+  padding: 7px 8px;
+  font-size: 12.5px;
+}
+.data-table.compact th {
+  font-size: 11.5px;
+}
+/* 雙行儲存格（顯示「買/賣」「筆/勝率」這種兩個值） */
+.cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.25;
+}
+.cell-stack .sub {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 /* 表頭：sticky 凍結 */
 .data-table thead th {
   background: var(--surface-2);
@@ -787,6 +807,189 @@ section .data-table:not(.table-scroll *) {
   border-color: var(--danger);
   color: var(--danger);
   background: var(--danger-light);
+}
+
+/* ============ 個股展開細節指標卡 ============ */
+.stock-detail-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  padding: 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-light);
+}
+.stock-detail-panel .indicator {
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-variant-numeric: tabular-nums;
+}
+.stock-detail-panel .indicator .label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+.stock-detail-panel .indicator .value {
+  font-size: 14px;
+  font-weight: 600;
+}
+.stock-detail-panel .indicator .value.pos { color: var(--success); }
+.stock-detail-panel .indicator .value.neg { color: var(--danger); }
+
+/* ============ 月份比較分析 ============ */
+.cmp-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  font-variant-numeric: tabular-nums;
+}
+.cmp-table th, .cmp-table td {
+  padding: 10px 14px;
+  text-align: right;
+  border-bottom: 1px solid var(--border-light);
+}
+.cmp-table th:first-child, .cmp-table td:first-child {
+  text-align: left;
+}
+.cmp-table thead th {
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+}
+.cmp-table tbody tr:last-child td { border-bottom: none; }
+.cmp-table tbody tr:hover td { background: var(--surface-2); }
+.cmp-period {
+  font-weight: 600;
+  font-size: 14px;
+}
+.cmp-period .sub {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-top: 2px;
+}
+
+.cmp-arrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.cmp-arrow.up { color: var(--success); }
+.cmp-arrow.down { color: var(--danger); }
+.cmp-arrow.flat { color: var(--text-muted); }
+.cmp-arrow .icon {
+  font-size: 14px;
+}
+.cmp-bar {
+  display: inline-block;
+  height: 4px;
+  background: var(--border-light);
+  border-radius: 2px;
+  position: relative;
+  width: 80px;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.cmp-bar .fill {
+  position: absolute;
+  height: 100%;
+  border-radius: 2px;
+  top: 0;
+}
+.cmp-bar .fill.up { background: var(--success); left: 50%; }
+.cmp-bar .fill.down { background: var(--danger); right: 50%; }
+
+.cmp-empty {
+  padding: 30px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+/* ============ 期間展開（總覽用） ============ */
+.period-info {
+  position: relative;
+}
+.period-toggle {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-left: 8px;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.period-toggle:hover {
+  background: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.period-detail-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 100;
+  min-width: 320px;
+  max-width: 480px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 12px 14px;
+}
+.period-detail-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  letter-spacing: 0.3px;
+}
+.period-detail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.period-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-light);
+  font-variant-numeric: tabular-nums;
+}
+.period-item:last-child { border-bottom: none; }
+.period-item .acc-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.period-item .acc-range {
+  font-size: 12px;
+  color: var(--text);
+  text-align: right;
+}
+.period-item .acc-days {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  padding: 2px 6px;
+  border-radius: 4px;
 }
 
 /* ============ 調整金額按鈕 ============ */
