@@ -451,6 +451,16 @@
       </label>
       <label><input type="checkbox" id="realizedAppend"> 追加（不取代既有資料）</label>
     </div>
+
+    <div class="import-card">
+      <h3>💵 股利紀錄（除權息總覽）</h3>
+      <p>每一檔追加成一筆，匯入時填統一的除息日</p>
+      <label class="upload-area" for="upDividendsImport">
+        <span>點此或拖曳 .xls / .xlsx 檔</span>
+        <input type="file" id="upDividendsImport" accept=".xls,.xlsx,.html,.htm" hidden>
+      </label>
+      <p class="hint" style="margin:6px 0 0;font-size:11px">⚠️ 重複匯入會純追加，請手動整理</p>
+    </div>
   </div>
 
   <div id="importLog" class="log-box"></div>
