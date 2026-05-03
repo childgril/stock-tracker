@@ -482,6 +482,19 @@
 
   <div id="importLog" class="log-box"></div>
 
+  <h3 style="margin-top:30px">🧹 清除單項資料</h3>
+  <p class="hint">只清除該分類的資料，其他不動。每個按鈕都會跳出確認</p>
+  <div class="clear-grid">
+    <button class="btn-mini" data-clear="unrealized">📦 清除未實現損益</button>
+    <button class="btn-mini" data-clear="trades">📋 清除投資明細</button>
+    <button class="btn-mini" data-clear="realized">💰 清除已實現損益</button>
+    <button class="btn-mini" data-clear="dividends">💵 清除股利紀錄</button>
+    <button class="btn-mini" data-clear="loans">🏛️ 清除股票借款</button>
+    <button class="btn-mini" data-clear="marginCalls">⚠️ 清除融資回補</button>
+    <button class="btn-mini" data-clear="snapshots">📸 清除歷史快照</button>
+    <button class="btn-mini" data-clear="adjustments">✏️ 清除調整金額</button>
+  </div>
+
   <h3 style="margin-top:30px">⚠️ 危險操作</h3>
   <button class="btn-mini danger" id="btnClearAccount">清空目前帳戶所有資料</button>
 </section>

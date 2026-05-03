@@ -658,10 +658,10 @@ section .data-table:not(.table-scroll *) {
 .upload-label .btn-mini {
   cursor: pointer;
 }
-.dividend-stock-row {
+.dividend-stock-row.clickable {
   cursor: pointer;
 }
-.dividend-stock-row:hover td {
+.dividend-stock-row.clickable:hover td {
   background: var(--primary-light);
 }
 .dividend-mode-tag {
@@ -990,6 +990,27 @@ section .data-table:not(.table-scroll *) {
   background: var(--surface-2);
   padding: 2px 6px;
   border-radius: 4px;
+}
+
+/* ============ 清除單項資料按鈕 ============ */
+.clear-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+  max-width: 800px;
+}
+.clear-grid .btn-mini {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 13px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: all 0.15s;
+}
+.clear-grid .btn-mini:hover {
+  background: var(--danger-light);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 /* ============ 調整金額按鈕 ============ */

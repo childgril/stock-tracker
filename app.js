@@ -3588,9 +3588,21 @@ function renderDividends() {
 
 function renderDividendsByStock(byCode) {
   if (!byCode.length) return '<div class="empty-state">無資料</div>';
-  const rows = byCode.slice().sort((a, b) => b.cash - a.cash).map(s => {
-    return `
-      <tr class="dividend-stock-row" data-code="${s.code}">
+
+  if (!State._expandedDivStocks) State._expandedDivStocks = new Set();
+  const expandedSet = State._expandedDivStocks;
+
+  const rows = [];
+  for (const s of byCode.slice().sort((a, b) => b.cash - a.cash)) {
+    const expanded = expandedSet.has(s.code);
+    const hasEntries = s.entries.length > 0;
+    const toggleArrow = hasEntries
+      ? `<span class="month-toggle ${expanded?'expanded':''}">▶</span>`
+      : '<span style="display:inline-block;width:14px"></span>';
+
+    rows.push(`
+      <tr class="dividend-stock-row ${hasEntries?'clickable':''}" data-code="${s.code}">
+        <td>${toggleArrow}</td>
         <td><strong>${s.code}</strong></td>
         <td>${s.name}</td>
         <td class="pos">${fmt(s.cash)}</td>
@@ -3602,14 +3614,13 @@ function renderDividendsByStock(byCode) {
           <button class="btn-mini danger" data-act="del-stock" data-code="${s.code}">刪除全部</button>
         </td>
       </tr>
-    `;
-  }).join('');
+    `);
 
-  // 展開逐筆紀錄
-  const detailRows = byCode
-    .filter(s => s.entries.length > 0)
-    .map(s => {
-      const entries = s.entries.slice().sort((a, b) => (b.payDate || b.exDate || '').localeCompare(a.payDate || a.exDate || ''));
+    // 行內展開
+    if (expanded && hasEntries) {
+      const entries = s.entries.slice().sort((a, b) =>
+        (b.payDate || b.exDate || '').localeCompare(a.payDate || a.exDate || '')
+      );
       const inner = entries.map(e => `
         <tr>
           <td>${e.exDate || '—'}</td>
@@ -3624,29 +3635,29 @@ function renderDividendsByStock(byCode) {
           </td>
         </tr>
       `).join('');
-      return `
-        <tr class="month-detail-row"><td colspan="7">
+      rows.push(`
+        <tr class="month-detail-row"><td colspan="8">
           <div class="nested" style="padding:14px">
-            <h4>${s.code} ${s.name} - 逐筆紀錄（${entries.length} 筆，合計現金 ${fmt(s.cash)}）</h4>
+            <h4 style="margin:0 0 10px;font-size:13px">逐筆紀錄（${entries.length} 筆，合計現金 ${fmt(s.cash)}）</h4>
             <table class="dividend-entry-table">
               <thead><tr><th>除息日</th><th>發放日</th><th>備註</th><th>現金</th><th>股票股數</th><th>扣繳稅</th><th></th></tr></thead>
               <tbody>${inner}</tbody>
             </table>
           </div>
         </td></tr>
-      `;
-    }).join('');
+      `);
+    }
+  }
 
   return `
     <div class="table-scroll">
       <table class="data-table">
         <thead><tr>
-          <th>代號</th><th>名稱</th><th>現金股利合計</th><th>股票股數</th><th>扣繳稅</th><th>筆數</th><th>操作</th>
+          <th></th><th>代號</th><th>名稱</th><th>現金股利合計</th><th>股票股數</th><th>扣繳稅</th><th>筆數</th><th>操作</th>
         </tr></thead>
-        <tbody>${rows}</tbody>
+        <tbody>${rows.join('')}</tbody>
       </table>
     </div>
-    ${detailRows ? `<div style="margin-top:18px"><h3>逐筆紀錄展開</h3><table class="data-table"><tbody>${detailRows}</tbody></table></div>` : ''}
   `;
 }
 
@@ -3731,34 +3742,44 @@ function renderDividendsByYear(entries) {
 }
 
 function bindDividendEvents() {
-  document.querySelectorAll('#dividendList button[data-act], #dividendList .dividend-stock-row').forEach(el => {
-    if (el.tagName === 'TR') {
-      // 點 row 不做事（避免和按鈕衝突）
-      return;
-    }
-    el.onclick = async (e) => {
+  // 1. 按鈕（編輯/刪除/新增等）
+  document.querySelectorAll('#dividendList button[data-act]').forEach(btn => {
+    btn.onclick = async (e) => {
       e.stopPropagation();
       const acc = getCurrentAccount();
-      const act = el.dataset.act;
+      const act = btn.dataset.act;
 
       if (act === 'add-entry') {
-        await addDividendEntry(el.dataset.code, el.dataset.name);
+        await addDividendEntry(btn.dataset.code, btn.dataset.name);
       } else if (act === 'edit-entry') {
-        const entry = acc.dividends.entries.find(x => x.id === el.dataset.id);
+        const entry = acc.dividends.entries.find(x => x.id === btn.dataset.id);
         if (entry) await editDividendEntry(entry);
       } else if (act === 'del-entry') {
         const ok = await confirmDialog('刪除逐筆紀錄', '確定刪除這筆股利紀錄？');
         if (ok) {
-          acc.dividends.entries = acc.dividends.entries.filter(x => x.id !== el.dataset.id);
+          acc.dividends.entries = acc.dividends.entries.filter(x => x.id !== btn.dataset.id);
           save(); renderAll();
         }
       } else if (act === 'del-stock') {
-        const ok = await confirmDialog('刪除股票所有股利紀錄', `確定刪除「${el.dataset.code}」的所有股利紀錄（含所有逐筆）？`);
+        const ok = await confirmDialog('刪除股票所有股利紀錄', `確定刪除「${btn.dataset.code}」的所有股利紀錄（含所有逐筆）？`);
         if (ok) {
-          acc.dividends.entries = acc.dividends.entries.filter(x => x.code !== el.dataset.code);
+          acc.dividends.entries = acc.dividends.entries.filter(x => x.code !== btn.dataset.code);
           save(); renderAll();
         }
       }
+    };
+  });
+
+  // 2. 點該股切換展開（只有「以股票檢視」的列才有 .clickable）
+  document.querySelectorAll('#dividendList .dividend-stock-row.clickable').forEach(row => {
+    row.onclick = (e) => {
+      // 點按鈕區不展開
+      if (e.target.closest('button')) return;
+      const code = row.dataset.code;
+      if (!State._expandedDivStocks) State._expandedDivStocks = new Set();
+      if (State._expandedDivStocks.has(code)) State._expandedDivStocks.delete(code);
+      else State._expandedDivStocks.add(code);
+      renderDividends();
     };
   });
 }
@@ -4621,6 +4642,78 @@ function bindEvents() {
     acc.unrealized = []; acc.trades = []; acc.realized = []; acc.snapshots = [];
     save(); renderAll(); toast('已清空', 'ok');
   });
+
+  // 單項清除
+  document.querySelectorAll('button[data-clear]').forEach(btn => {
+    btn.onclick = async () => {
+      const kind = btn.dataset.clear;
+      const acc = getCurrentAccount();
+      if (!acc) return toast('請先選擇帳戶', 'err');
+      await clearAccountSection(acc, kind);
+    };
+  });
+}
+
+// 單項清除實作
+async function clearAccountSection(acc, kind) {
+  const config = {
+    unrealized: { label: '未實現損益', count: acc.unrealized.length, action: () => {
+      acc.unrealized = []; acc.unrealizedSnapshotDate = null;
+    }},
+    trades: { label: '投資明細', count: acc.trades.length, action: () => {
+      acc.trades = [];
+      // 投資明細清空後，已實現的配對狀態也要清掉
+      Parsers.enrichRealizedWithInterest(acc.realized, acc.trades);
+    }},
+    realized: { label: '已實現損益', count: acc.realized.length, action: () => {
+      acc.realized = [];
+    }},
+    dividends: {
+      label: '股利紀錄',
+      count: (acc.dividends?.entries?.length || 0),
+      action: () => { acc.dividends = { entries: [] }; }
+    },
+    loans: { label: '股票借款', count: (acc.loans||[]).length, action: () => {
+      acc.loans = [];
+    }},
+    marginCalls: { label: '融資回補', count: (acc.marginCalls||[]).length, action: () => {
+      acc.marginCalls = [];
+    }},
+    snapshots: { label: '歷史快照', count: (acc.snapshots||[]).length, action: () => {
+      acc.snapshots = [];
+    }},
+    adjustments: {
+      label: '調整金額紀錄',
+      count: Object.keys(acc.adjustments || {}).length,
+      action: () => {
+        acc.adjustments = {};
+        // 同步把 realized 上的 adjust/refund/note 清掉
+        for (const r of acc.realized) {
+          r.adjust = 0; r.refund = 0; r.note = '';
+        }
+      }
+    }
+  };
+
+  const c = config[kind];
+  if (!c) return;
+
+  if (c.count === 0) {
+    return toast(`${c.label}：沒有資料可清除`, 'err');
+  }
+
+  const ok = await confirmDialog(
+    `清除「${c.label}」`,
+    `確定清除「${acc.name}」帳戶的<b>${c.label}</b>？<br><br>
+     將刪除 <b>${c.count}</b> 筆資料，<b>無法還原</b>（除非你之前匯出過 JSON 備份）。<br><br>
+     其他分類的資料不會被影響。`
+  );
+  if (!ok) return;
+
+  c.action();
+  save();
+  renderAll();
+  toast(`已清除「${c.label}」（${c.count} 筆）`, 'ok');
 }
 
 function bindUpload(inputId, handler) {
