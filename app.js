@@ -2111,13 +2111,60 @@ let _priceCache = {
 };
 const PRICE_CACHE_TTL = 5 * 60 * 1000; // 5 分鐘
 
+// ---------- 帶 timeout 的 fetch ----------
+async function fetchWithTimeout(url, timeoutMs = 12000, options = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...options, signal: ctrl.signal });
+    return resp;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------- 多重來源抓 OpenAPI 資料 ----------
+// 順序：直接打 → allorigins 代理 → codetabs 代理
+// 任一成功就回傳 JSON。每層各 12 秒 timeout
+async function fetchOpenApiWithFallback(url, label = '') {
+  const sources = [
+    { name: '直連', url: url },
+    { name: 'allorigins', url: 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url) },
+    { name: 'codetabs', url: 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url) },
+  ];
+  let lastErr = null;
+  for (const src of sources) {
+    try {
+      const resp = await fetchWithTimeout(src.url, 12000);
+      if (!resp.ok) {
+        lastErr = new Error(`${label} ${src.name} HTTP ${resp.status}`);
+        continue;
+      }
+      const text = await resp.text();
+      // 嘗試解析 JSON
+      try {
+        const data = JSON.parse(text);
+        if (Array.isArray(data) && data.length > 0) {
+          console.log(`[${label}] 成功透過 ${src.name} 抓到 ${data.length} 筆`);
+          return data;
+        }
+        // 空陣列也算失敗，繼續嘗試下一個
+        lastErr = new Error(`${label} ${src.name} 回傳空陣列`);
+      } catch (parseErr) {
+        lastErr = new Error(`${label} ${src.name} JSON 解析失敗`);
+      }
+    } catch (e) {
+      lastErr = new Error(`${label} ${src.name}: ${e.message || e}`);
+    }
+  }
+  throw lastErr || new Error(`${label} 所有來源都失敗`);
+}
+
 async function fetchTWSEPrices() {
   // 證交所每日收盤行情（全市場一次拿）
   // 欄位範例：{ Code, Name, ClosingPrice, ChangePrice, ... }
   const url = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_AVG_ALL';
-  const resp = await fetch(url, { method: 'GET' });
-  if (!resp.ok) throw new Error(`TWSE HTTP ${resp.status}`);
-  const data = await resp.json();
+  const data = await fetchOpenApiWithFallback(url, 'TWSE');
   const map = new Map();
   for (const r of data) {
     const code = String(r.Code || '').trim();
@@ -2132,12 +2179,9 @@ async function fetchTWSEPrices() {
 async function fetchTPEXPrices() {
   // 櫃買中心上櫃每日收盤
   const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes';
-  const resp = await fetch(url, { method: 'GET' });
-  if (!resp.ok) throw new Error(`TPEX HTTP ${resp.status}`);
-  const data = await resp.json();
+  const data = await fetchOpenApiWithFallback(url, 'TPEX');
   const map = new Map();
   for (const r of data) {
-    // 欄位名稱可能是 SecuritiesCompanyCode 或 Code
     const code = String(r.SecuritiesCompanyCode || r.Code || '').trim();
     const price = parseFloat(r.Close || r.ClosingPrice);
     const name = r.CompanyName || r.Name || '';
@@ -2146,6 +2190,38 @@ async function fetchTPEXPrices() {
     }
   }
   return map;
+}
+
+// ---------- 個別查詢 fallback：Yahoo Finance Chart API ----------
+// 有即時報價，且支援 .TW（上市）/ .TWO（上櫃）
+// 使用代理避開 CORS
+async function fetchYahooSinglePrice(code) {
+  const symbols = [`${code}.TW`, `${code}.TWO`];
+  const proxies = [
+    (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+    (u) => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u),
+  ];
+
+  for (const sym of symbols) {
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`;
+    for (const wrap of proxies) {
+      try {
+        const resp = await fetchWithTimeout(wrap(yahooUrl), 8000);
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        const result = data?.chart?.result?.[0];
+        const price = result?.meta?.regularMarketPrice;
+        if (price && price > 0) {
+          return {
+            price: parseFloat(price),
+            name: result.meta?.longName || result.meta?.shortName || '',
+            source: 'yahoo'
+          };
+        }
+      } catch (e) { /* 嘗試下一個代理 / symbol */ }
+    }
+  }
+  return null;
 }
 
 // 主流程：抓股價並覆寫到目前帳戶的 unrealized
@@ -2169,7 +2245,7 @@ async function refreshPrices(silent = false) {
         _priceCache.twseMap = await fetchTWSEPrices();
         _priceCache.twseAt = now;
       } catch (e) {
-        console.warn('TWSE 抓取失敗，繼續嘗試 TPEX：', e);
+        console.warn('TWSE 抓取失敗：', e);
         if (!_priceCache.twseMap) _priceCache.twseMap = new Map();
       }
     }
@@ -2187,13 +2263,11 @@ async function refreshPrices(silent = false) {
 
     const twse = _priceCache.twseMap;
     const tpex = _priceCache.tpexMap;
+    const openapiOk = (twse.size + tpex.size) > 0;
 
-    if (twse.size === 0 && tpex.size === 0) {
-      throw new Error('證交所和櫃買中心都抓不到資料（網路問題或服務暫時無法使用）');
-    }
-
-    // 套用：覆寫 unrealized 表的 price、marketValue、pl、rate
-    let updated = 0, failed = [];
+    // 第一輪：用 OpenAPI（如果有）填價格
+    let updated = 0;
+    const failed = [];
     for (const x of acc.unrealized) {
       const code = String(x.code || '').trim();
       const info = twse.get(code) || tpex.get(code);
@@ -2209,19 +2283,62 @@ async function refreshPrices(silent = false) {
         x._priceUpdatedAt = new Date().toISOString();
         updated++;
       } else {
-        x._priceUpdated = false;
-        failed.push(x.code);
+        failed.push(x);
       }
+    }
+
+    // 第二輪：失敗的個別用 Yahoo 補
+    let yahooFilled = 0;
+    if (failed.length > 0) {
+      setPriceStatus(`正在用 Yahoo 備援抓取剩下 ${failed.length} 檔…`, 'loading');
+      // 並行抓但不要太多並發（最多 5 個同時）
+      const BATCH = 5;
+      for (let i = 0; i < failed.length; i += BATCH) {
+        const batch = failed.slice(i, i + BATCH);
+        const results = await Promise.all(batch.map(x => fetchYahooSinglePrice(x.code)));
+        for (let j = 0; j < batch.length; j++) {
+          const x = batch[j];
+          const info = results[j];
+          if (info && info.price > 0) {
+            x.price = info.price;
+            x.marketValue = info.price * (x.qty || 0);
+            x.pl = x.marketValue - (x.cost || 0);
+            if (x.cost > 0) {
+              const r = (x.pl / x.cost) * 100;
+              x.rate = (r > 0 ? '+' : '') + r.toFixed(2) + '%';
+            }
+            x._priceUpdated = true;
+            x._priceUpdatedAt = new Date().toISOString();
+            updated++;
+            yahooFilled++;
+          } else {
+            x._priceUpdated = false;
+          }
+        }
+      }
+    }
+
+    // 統計
+    const stillFailedCodes = acc.unrealized
+      .filter(x => x._priceUpdated === false)
+      .map(x => x.code);
+
+    if (updated === 0) {
+      throw new Error('所有來源都抓不到資料（網路問題或瀏覽器擋下了 OpenAPI 與代理服務）');
     }
 
     save();
     const ts = new Date();
     const timeStr = ts.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-    const totalSrc = `（上市 ${twse.size} 檔，上櫃 ${tpex.size} 檔）`;
-    if (failed.length === 0) {
-      setPriceStatus(`✓ 已更新 ${updated} 檔 ${totalSrc}，最後更新 ${timeStr}`, 'success');
+    const sourceParts = [];
+    if (openapiOk) sourceParts.push(`OpenAPI ${twse.size + tpex.size} 檔`);
+    if (yahooFilled > 0) sourceParts.push(`Yahoo 備援 ${yahooFilled} 檔`);
+    const sourceText = sourceParts.length > 0 ? `（${sourceParts.join('，')}）` : '';
+
+    if (stillFailedCodes.length === 0) {
+      setPriceStatus(`✓ 已更新 ${updated} 檔 ${sourceText}，最後更新 ${timeStr}`, 'success');
     } else {
-      setPriceStatus(`✓ ${updated} 檔成功，${failed.length} 檔找不到 (${failed.slice(0,3).join(',')}${failed.length>3?'...':''})，更新時間 ${timeStr}`, 'success');
+      setPriceStatus(`✓ ${updated} 檔成功，${stillFailedCodes.length} 檔找不到 (${stillFailedCodes.slice(0,3).join(',')}${stillFailedCodes.length>3?'...':''}) ${sourceText}，更新時間 ${timeStr}`, 'success');
     }
     renderAll();
   } catch (e) {
