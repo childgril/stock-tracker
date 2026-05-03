@@ -588,6 +588,100 @@ section .data-table:not(.table-scroll *) {
   padding: 40px 20px;
 }
 
+/* ============ 股價更新工具列 ============ */
+.price-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  box-shadow: var(--shadow-sm);
+}
+.price-status {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.price-status.loading {
+  color: var(--primary);
+  font-weight: 500;
+}
+.price-status.success { color: var(--success); }
+.price-status.error { color: var(--danger); }
+.price-source-info {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+.price-updated-cell {
+  background: rgba(37, 99, 235, 0.06) !important;
+}
+.price-failed-tag {
+  font-size: 10px;
+  color: var(--warning);
+  background: var(--warning-light);
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: 4px;
+}
+
+/* ============ 股利紀錄 ============ */
+.upload-label {
+  display: inline-flex;
+  cursor: pointer;
+}
+.upload-label .btn-mini {
+  cursor: pointer;
+}
+.dividend-stock-row {
+  cursor: pointer;
+}
+.dividend-stock-row:hover td {
+  background: var(--primary-light);
+}
+.dividend-mode-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  margin-left: 6px;
+}
+.dividend-mode-tag.aggregate {
+  background: var(--surface-3);
+  color: var(--text-dim);
+}
+.dividend-mode-tag.detailed {
+  background: var(--success-light);
+  color: var(--success);
+}
+.dividend-entry-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  background: var(--surface);
+  margin-top: 8px;
+}
+.dividend-entry-table th, .dividend-entry-table td {
+  padding: 7px 10px;
+  text-align: right;
+  border-bottom: 1px solid var(--border-light);
+}
+.dividend-entry-table th:nth-child(-n+3),
+.dividend-entry-table td:nth-child(-n+3) {
+  text-align: left;
+}
+.dividend-entry-table th {
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 12px;
+}
+
 /* ============ 借款卡片 ============ */
 .loan-card {
   background: var(--surface);

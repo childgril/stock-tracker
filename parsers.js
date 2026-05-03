@@ -744,10 +744,92 @@ const Parsers = (() => {
     return { matched, total };
   }
 
+  // ============================================================
+  // 股利檔案解析（券商提供的「除權息總覽」HTML 偽裝 .xls）
+  // 欄位：代號 / 名稱 / 現金股利 / 股票股利
+  // ============================================================
+  function parseDividendsFromText(text) {
+    // 用 DOMParser 把 HTML 字串解析成表格
+    const doc = new DOMParser().parseFromString(text, 'text/html');
+    const tables = doc.querySelectorAll('table');
+    const items = [];
+    for (const tbl of tables) {
+      const rows = tbl.querySelectorAll('tr');
+      let headerSeen = false;
+      for (const tr of rows) {
+        const cells = [...tr.querySelectorAll('td, th')].map(c => (c.textContent || '').trim());
+        if (cells.length < 3) continue;
+        // 偵測表頭
+        if (!headerSeen && /代號/.test(cells[0]) && /名稱/.test(cells[1])) {
+          headerSeen = true;
+          continue;
+        }
+        // 資料列：代號必須是英數字組合
+        const code = cells[0];
+        if (!code || !/^[A-Z0-9]+$/i.test(code)) continue;
+        const name = cells[1] || '';
+        const cash = toNumber(cells[2]);
+        const stock = toNumber(cells[3]);
+        if (cash === 0 && stock === 0) continue; // 跳過全空列
+        items.push({
+          code,
+          name,
+          cashTotal: cash,
+          stockTotal: stock,
+        });
+      }
+      if (items.length > 0) break; // 已找到資料就停
+    }
+    return items;
+  }
+
+  // 直接讀檔案物件（File / Blob），自動處理 HTML 或真正 xls/xlsx
+  async function parseDividendsFile(file) {
+    // 偵測是 HTML 還是 binary
+    const headBytes = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+    const headStr = new TextDecoder('utf-8', { fatal: false }).decode(headBytes);
+    const isHtml = /<\s*(html|table|meta|\?xml)/i.test(headStr);
+
+    if (isHtml) {
+      // 用 text 讀，然後 DOMParser
+      let text = await file.text();
+      // 有些券商會用 BIG5 編碼，瀏覽器預設用 UTF-8 讀會亂碼
+      // 偵測：如果 text 含 BIG5 亂碼模式（？？或大量 \uFFFD），改用 BIG5
+      if (text.includes('\uFFFD') || /[\xC0-\xFF]{3,}/.test(text)) {
+        try {
+          const buf = await file.arrayBuffer();
+          text = new TextDecoder('big5').decode(buf);
+        } catch (e) { /* 沒 big5 支援就吞 */ }
+      }
+      return { broker: 'html', items: parseDividendsFromText(text) };
+    }
+
+    // 真正的 xlsx/xls：用 SheetJS
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = sheetToRows(ws);
+    const items = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i] || [];
+      const code = toString(r[0]);
+      const name = toString(r[1]);
+      // 跳過表頭
+      if (!code || code === '代號' || !/^[A-Z0-9]+$/i.test(code)) continue;
+      const cash = toNumber(r[2]);
+      const stock = toNumber(r[3]);
+      if (cash === 0 && stock === 0) continue;
+      items.push({ code, name, cashTotal: cash, stockTotal: stock });
+    }
+    return { broker: 'xlsx', items };
+  }
+
   return {
     parseUnrealized,
     parseTrades,
     parseRealized,
+    parseDividendsFile,
+    parseDividendsFromText,
     enrichRealizedWithInterest,
     detectFormat,
     toNumber,

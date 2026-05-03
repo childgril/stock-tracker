@@ -28,6 +28,7 @@
     <button class="tab" data-tab="trades">📋 投資明細</button>
     <button class="tab" data-tab="loans">🏛️ 股票借款</button>
     <button class="tab" data-tab="margincall">⚠️ 融資回補</button>
+    <button class="tab" data-tab="dividends">💵 股利紀錄</button>
     <button class="tab" data-tab="import">⬆️ 匯入資料</button>
   </nav>
 
@@ -62,6 +63,7 @@
     <div class="card"><div class="label">已付融資利息</div><div class="value" id="ovTotalInterest">—</div></div>
     <div class="card"><div class="label">已付融券手續費</div><div class="value" id="ovTotalShortFee">—</div></div>
     <div class="card"><div class="label">未領回回補金額</div><div class="value" id="ovMarginCallRemaining">—</div></div>
+    <div class="card"><div class="label">累計現金股利</div><div class="value pos" id="ovTotalDividend">—</div></div>
   </div>
 
   <h3>各帳戶分布</h3>
@@ -101,6 +103,7 @@
     <div class="card"><div class="label">借款利息累計</div><div class="value" id="acLoanInterest">—</div></div>
     <div class="card"><div class="label">借款餘額</div><div class="value" id="acLoanBalance">—</div></div>
     <div class="card"><div class="label">未領回回補金額</div><div class="value" id="acMarginCallRemaining">—</div></div>
+    <div class="card"><div class="label">累計現金股利</div><div class="value pos" id="acDividendCash">—</div></div>
   </div>
 
   <div id="acDataStatus"></div>
@@ -123,6 +126,7 @@
         <th>融券手續費</th>
         <th>借款利息</th>
         <th>融資回補</th>
+        <th>現金股利</th>
         <th>調整金額</th>
         <th>實際損益</th>
         <th>交易筆數</th>
@@ -249,6 +253,13 @@
     <div class="period-info" id="period-unrealized"></div>
   </div>
   <p class="hint" id="unrealizedSnapshotInfo"></p>
+
+  <div class="price-toolbar">
+    <button class="btn-mini primary" id="btnRefreshPrice">🔄 更新即時股價</button>
+    <span class="price-status" id="priceStatus">尚未更新</span>
+    <span class="price-source-info">資料來源：Yahoo Finance（延遲約 15 分鐘）</span>
+  </div>
+
   <div class="summary-grid small">
     <div class="card"><div class="label">總市值</div><div class="value" id="urMarket">—</div></div>
     <div class="card"><div class="label">總成本</div><div class="value" id="urCost">—</div></div>
@@ -364,6 +375,38 @@
   </div>
 
   <div id="marginCallList"></div>
+</section>
+
+<!-- =================== 股利紀錄 =================== -->
+<section id="tab-dividends" class="tab-content">
+  <div class="page-header">
+    <h2>股利紀錄</h2>
+    <div class="period-info" id="period-dividends"></div>
+  </div>
+  <p class="hint">記錄該帳戶持股的現金股利與股票股利。可匯入券商的「除權息總覽」累計檔，也可手動加入逐筆配息紀錄</p>
+
+  <div class="summary-grid small">
+    <div class="card"><div class="label">累計現金股利</div><div class="value pos" id="divTotalCash">—</div></div>
+    <div class="card"><div class="label">累計股票股利</div><div class="value" id="divTotalStock">—</div></div>
+    <div class="card"><div class="label">逐筆紀錄筆數</div><div class="value" id="divEntryCount">—</div></div>
+    <div class="card"><div class="label">配息檔數</div><div class="value" id="divStockCount">—</div></div>
+  </div>
+
+  <div class="table-toolbar">
+    <button class="btn-mini primary" id="btnAddDividend">＋ 新增逐筆紀錄</button>
+    <label class="upload-label">
+      <span class="btn-mini">📥 匯入累計檔（券商除權息總覽）</span>
+      <input type="file" id="upDividends" accept=".xls,.xlsx,.html,.htm" hidden>
+    </label>
+    <button class="btn-mini" id="btnExportDividends">📊 匯出 Excel</button>
+    <select id="divViewMode" style="margin-left:auto">
+      <option value="byStock">以股票檢視</option>
+      <option value="byEntry">以逐筆紀錄檢視</option>
+      <option value="byYear">以年度檢視</option>
+    </select>
+  </div>
+
+  <div id="dividendList"></div>
 </section>
 
 <section id="tab-import" class="tab-content">

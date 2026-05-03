@@ -25,7 +25,13 @@ function emptyAccount(name, broker = '元大') {
     realized: [],
     adjustments: {},
     loans: [],
-    marginCalls: []          // 融資回補紀錄 [{id, date, amount, reason, ratio, note, payouts:[{date,amount,note}], status}]
+    marginCalls: [],
+    dividends: {
+      // 累計模式：每檔一筆 {code, name, cashTotal, stockTotal}
+      aggregates: [],
+      // 逐筆紀錄：{id, code, name, exDate, payDate, cash, stockShares, tax, note}
+      entries: []
+    }
   };
 }
 
@@ -48,6 +54,11 @@ function load() {
         for (const acc of data.accounts) {
           if (!Array.isArray(acc.loans)) acc.loans = [];
           if (!Array.isArray(acc.marginCalls)) acc.marginCalls = [];
+          if (!acc.dividends || typeof acc.dividends !== 'object') {
+            acc.dividends = { aggregates: [], entries: [] };
+          }
+          if (!Array.isArray(acc.dividends.aggregates)) acc.dividends.aggregates = [];
+          if (!Array.isArray(acc.dividends.entries)) acc.dividends.entries = [];
         }
       }
       return data;
@@ -568,6 +579,7 @@ function renderAll() {
   renderTrades();
   renderLoans();
   renderMarginCalls();
+  renderDividends();
   renderPeriodInfo();
 }
 
@@ -637,6 +649,7 @@ function renderPeriodInfo() {
     'period-trades': accHtml,
     'period-loans': accHtml,
     'period-margincall': accHtml,
+    'period-dividends': accHtml,
     'period-import': accHtml
   };
   for (const [id, html] of Object.entries(map)) {
@@ -670,8 +683,14 @@ function aggregateAccount(acc) {
     s + (m.payouts || []).reduce((ss, p) => ss + (p.amount || 0), 0), 0);
   const mcRemaining = mcTotal - mcPayout;
 
+  // 股利
+  const div = acc.dividends || { aggregates: [], entries: [] };
+  const dividendCash = computeDividendTotalCash(acc);
+  const dividendStock = computeDividendTotalStock(acc);
+
   // 已實現損益要扣借款利息（你要求的：借款利息計入實際損益）
-  const realizedPL = realizedPLRaw - loanInterestPaid;
+  // 並加入現金股利（股利是這個帳戶股票產生的）
+  const realizedPL = realizedPLRaw - loanInterestPaid + dividendCash;
 
   return {
     totalMarket, totalCost, unrealizedPL,
@@ -680,8 +699,52 @@ function aggregateAccount(acc) {
     realizedPLRaw,
     loanInterestPaid,
     loanPrincipal, loanRepaid, loanRemaining,
-    mcTotal, mcPayout, mcRemaining
+    mcTotal, mcPayout, mcRemaining,
+    dividendCash, dividendStock
   };
+}
+
+// ---------- 股利統計輔助 ----------
+// 規則：每檔股票要嘛用「累計模式」要嘛用「逐筆模式」，逐筆優先
+// 1. 先看該檔有沒有逐筆紀錄 → 加總逐筆
+// 2. 沒逐筆才用該檔的累計值
+function computeDividendByCode(acc) {
+  const div = acc.dividends || { aggregates: [], entries: [] };
+  // 哪些代號有逐筆紀錄？
+  const hasEntry = new Set();
+  for (const e of div.entries) hasEntry.add(e.code);
+
+  const map = new Map();
+  // 累計：只放沒逐筆的
+  for (const a of div.aggregates) {
+    if (hasEntry.has(a.code)) continue;
+    map.set(a.code, {
+      code: a.code,
+      name: a.name || '',
+      cash: a.cashTotal || 0,
+      stock: a.stockTotal || 0,
+      mode: 'aggregate',
+      entries: []
+    });
+  }
+  // 逐筆：加總
+  for (const e of div.entries) {
+    if (!map.has(e.code)) {
+      map.set(e.code, { code: e.code, name: e.name || '', cash: 0, stock: 0, mode: 'detailed', entries: [] });
+    }
+    const s = map.get(e.code);
+    s.cash += (e.cash || 0);
+    s.stock += (e.stockShares || 0);
+    s.entries.push(e);
+  }
+  return [...map.values()];
+}
+
+function computeDividendTotalCash(acc) {
+  return computeDividendByCode(acc).reduce((s, x) => s + x.cash, 0);
+}
+function computeDividendTotalStock(acc) {
+  return computeDividendByCode(acc).reduce((s, x) => s + x.stock, 0);
 }
 
 function setVal(id, val, withClass = false) {
@@ -693,7 +756,7 @@ function setVal(id, val, withClass = false) {
 
 // ---------- 總覽 ----------
 function renderOverview() {
-  let M=0, C=0, U=0, R=0, I=0, S=0, LI=0, LB=0, MCR=0;
+  let M=0, C=0, U=0, R=0, I=0, S=0, LI=0, LB=0, MCR=0, DC=0;
   const perAccount = [];
   for (const a of State.data.accounts) {
     const g = aggregateAccount(a);
@@ -701,6 +764,7 @@ function renderOverview() {
     R += g.realizedPL; I += g.totalInterest; S += g.totalShortFee;
     LI += g.loanInterestPaid; LB += g.loanRemaining;
     MCR += g.mcRemaining;
+    DC += g.dividendCash;
     perAccount.push({ name: a.name, ...g });
   }
   setVal('ovTotalMarket', M);
@@ -710,6 +774,7 @@ function renderOverview() {
   setVal('ovTotalInterest', I);
   setVal('ovTotalShortFee', S);
   setVal('ovMarginCallRemaining', MCR);
+  setVal('ovTotalDividend', DC);
 
   // 表
   const tb = document.querySelector('#ovAccountTable tbody');
@@ -825,7 +890,7 @@ function renderAccount() {
   const acc = getCurrentAccount();
   const status = document.getElementById('acDataStatus');
   if (!acc) {
-    ['acMarket','acCost','acUnrealizedPL','acRealizedPL','acInterest','acShortFee','acLoanInterest','acLoanBalance','acMarginCallRemaining']
+    ['acMarket','acCost','acUnrealizedPL','acRealizedPL','acInterest','acShortFee','acLoanInterest','acLoanBalance','acMarginCallRemaining','acDividendCash']
       .forEach(id => setVal(id, '—'));
     status.innerHTML = '<div class="empty-state">尚未選擇帳戶</div>';
     document.querySelector('#monthlyTable tbody').innerHTML =
@@ -842,6 +907,7 @@ function renderAccount() {
   setVal('acLoanInterest', g.loanInterestPaid);
   setVal('acLoanBalance', g.loanRemaining);
   setVal('acMarginCallRemaining', g.mcRemaining);
+  setVal('acDividendCash', g.dividendCash);
 
   const lines = [];
   lines.push(`<p class="hint">未實現損益：<strong>${acc.unrealized.length}</strong> 檔（快照日 ${acc.unrealizedSnapshotDate || '—'}）　|　投資明細：<strong>${acc.trades.length}</strong> 筆　|　已實現損益：<strong>${acc.realized.length}</strong> 筆　|　歷史快照：<strong>${(acc.snapshots||[]).length}</strong> 筆　|　借款：<strong>${(acc.loans||[]).length}</strong> 筆</p>`);
@@ -920,11 +986,21 @@ function buildMonthlyData(acc) {
     m.marginCall = (m.marginCall || 0) + (mc.amount || 0);
   }
 
-  // 計算實際損益（已實現損益 + 調整 - 借款利息）
-  // 注意：盈虧已經扣過融資利息和融券手續費；融資回補不計入
+  // 股利：用「逐筆紀錄的發放日」分月
+  // 累計模式沒有日期 → 統一歸到「無日期」（在實際損益計算中還是會總額計入帳戶）
+  // 這裡只把「有日期」的逐筆紀錄分到對應月
+  for (const e of (acc.dividends?.entries || [])) {
+    const k = getMonthKey(e.payDate || e.exDate);
+    if (!k) continue;
+    const m = ensure(k);
+    m.dividendCash = (m.dividendCash || 0) + (e.cash || 0);
+  }
+
+  // 計算實際損益（已實現 + 調整 - 借款利息 + 現金股利）
   for (const m of months.values()) {
-    m.actual = m.realizedPL + m.adjust - m.loanInterest;
+    m.actual = m.realizedPL + m.adjust - m.loanInterest + (m.dividendCash || 0);
     if (!m.marginCall) m.marginCall = 0;
+    if (!m.dividendCash) m.dividendCash = 0;
   }
 
   return [...months.values()].sort((a, b) => b.key.localeCompare(a.key));
@@ -952,7 +1028,7 @@ function renderMonthly() {
   const filtered = currentYear ? data.filter(m => m.key.startsWith(currentYear)) : data;
 
   if (!filtered.length) {
-    tb.innerHTML = '<tr><td colspan="15" class="empty-state">尚無資料（請先匯入已實現損益或投資明細）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="16" class="empty-state">尚無資料（請先匯入已實現損益或投資明細）</td></tr>';
     return;
   }
 
@@ -970,6 +1046,7 @@ function renderMonthly() {
         <td>${fmt(m.shortFee)}</td>
         <td class="${m.loanInterest?'neg':''}">${m.loanInterest ? '-'+fmt(m.loanInterest) : '—'}</td>
         <td>${m.marginCall ? fmt(m.marginCall) : '—'}</td>
+        <td class="${m.dividendCash?'pos':''}">${m.dividendCash ? '+'+fmt(m.dividendCash) : '—'}</td>
         <td class="${plClass(m.adjust)}">${m.adjust?fmt(m.adjust,{sign:true}):'—'}</td>
         <td class="hl ${plClass(m.actual)}">${fmt(m.actual,{sign:true})}</td>
         <td>${m.tradeCount}</td>
@@ -981,7 +1058,7 @@ function renderMonthly() {
       </tr>
     `);
     if (expanded) {
-      rows.push(`<tr class="month-detail-row"><td colspan="15">${renderMonthDetail(m)}</td></tr>`);
+      rows.push(`<tr class="month-detail-row"><td colspan="16">${renderMonthDetail(m)}</td></tr>`);
     }
   }
   tb.innerHTML = rows.join('');
@@ -1088,13 +1165,14 @@ function exportMonthlyExcel() {
   const dayTrades = analyzeDayTrades(acc);
   const dtByMonth = aggregateDayTradesByMonth(dayTrades);
 
-  const headers = ['月份','已實現損益','融資利息','融券手續費','借款利息','融資回補','調整金額','實際損益','交易筆數','總成交金額',
+  const headers = ['月份','已實現損益','融資利息','融券手續費','借款利息','融資回補','現金股利','調整金額','實際損益','交易筆數','總成交金額',
                    '當沖筆數','當沖損益','當沖勝率(%)','當沖報酬率(%)'];
   const rows = data.map(m => {
     const dt = dtByMonth.get(m.key);
     return [
       m.key, m.realizedPL, m.interest, m.shortFee,
-      m.loanInterest, m.marginCall || 0, m.adjust, m.actual,
+      m.loanInterest, m.marginCall || 0, m.dividendCash || 0,
+      m.adjust, m.actual,
       m.tradeCount, m.tradeAmount,
       dt ? dt.count : 0,
       dt ? dt.netPL : 0,
@@ -1192,6 +1270,119 @@ function renderRealized() {
 }
 
 // ---------- 未實現損益 ----------
+// ============================================================
+// 抓即時股價（Yahoo Finance）
+// ============================================================
+
+// 是否已自動拓過（每次切到頁籤只自動拓一次，不要重複觸發）
+let _priceAutoFetched = false;
+let _priceFetching = false;
+
+function setPriceStatus(text, kind = '') {
+  const el = document.getElementById('priceStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'price-status ' + kind;
+}
+
+// 把代號轉成 Yahoo 格式
+// 4 位數字 → 上市（.TW）；5-6 位數字（00...或 00...B）→ 多半是 ETF/上市
+// 4 位英數混合 → 興櫃，可能用 .TWO（上櫃）；保險起見都先試 .TW
+function toYahooSymbols(codes) {
+  return codes.map(c => {
+    const code = String(c).trim();
+    if (!code) return null;
+    // 已含 .TW 或 .TWO 的不動
+    if (/\.TWO?$/i.test(code)) return code;
+    // 英文字母結尾（如 KY、B、R）→ 通常是上市
+    return code + '.TW';
+  }).filter(Boolean);
+}
+
+// 主流程：抓股價並覆寫到目前帳戶的 unrealized
+async function refreshPrices(silent = false) {
+  if (_priceFetching) return;
+  const acc = getCurrentAccount();
+  if (!acc || !acc.unrealized || !acc.unrealized.length) {
+    if (!silent) setPriceStatus('無持股可更新', 'error');
+    return;
+  }
+
+  _priceFetching = true;
+  setPriceStatus('正在更新…', 'loading');
+
+  // 收集代號（去重）
+  const codes = [...new Set(acc.unrealized.map(x => x.code).filter(Boolean))];
+  const symbols = toYahooSymbols(codes);
+
+  try {
+    // Yahoo Finance batch quote API（透過 corsproxy.io 繞過 CORS）
+    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols.join(',')}`;
+    const proxied = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+    const resp = await fetch(proxied, { method: 'GET' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const results = data?.quoteResponse?.result || [];
+
+    if (!results.length) {
+      throw new Error('Yahoo 沒回傳任何結果');
+    }
+
+    // 建立代號 → 現價的對照（去除 .TW/.TWO 字尾）
+    const priceMap = new Map();
+    for (const r of results) {
+      const sym = (r.symbol || '').replace(/\.TWO?$/i, '');
+      if (r.regularMarketPrice != null) {
+        priceMap.set(sym, {
+          price: r.regularMarketPrice,
+          change: r.regularMarketChange || 0,
+          changePct: r.regularMarketChangePercent || 0,
+          name: r.shortName || r.longName || ''
+        });
+      }
+    }
+
+    // 套用：覆寫 unrealized 表的 price、marketValue、pl、rate
+    let updated = 0, failed = [];
+    for (const x of acc.unrealized) {
+      const info = priceMap.get(x.code);
+      if (info && info.price > 0) {
+        x.price = info.price;
+        x.marketValue = info.price * (x.qty || 0);
+        x.pl = x.marketValue - (x.cost || 0);
+        // 報酬率重新算
+        if (x.cost > 0) {
+          const r = (x.pl / x.cost) * 100;
+          x.rate = (r > 0 ? '+' : '') + r.toFixed(2) + '%';
+        }
+        x._priceUpdated = true;
+        x._priceUpdatedAt = new Date().toISOString();
+        updated++;
+      } else {
+        x._priceUpdated = false;
+        failed.push(x.code);
+      }
+    }
+
+    save();
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    if (failed.length === 0) {
+      setPriceStatus(`✓ 已更新 ${updated} 檔，最後更新 ${timeStr}`, 'success');
+    } else {
+      setPriceStatus(`✓ ${updated} 檔成功，${failed.length} 檔失敗 (${failed.slice(0,3).join(',')}${failed.length>3?'...':''})，更新時間 ${timeStr}`, 'success');
+    }
+    renderAll();
+  } catch (e) {
+    console.error('refreshPrices error:', e);
+    setPriceStatus(`✗ 更新失敗：${e.message}`, 'error');
+  } finally {
+    _priceFetching = false;
+  }
+}
+
+
+// ---------- 未實現損益 ----------
 function renderUnrealized() {
   const acc = getCurrentAccount();
   const tb = document.querySelector('#unrealizedTable tbody');
@@ -1215,23 +1406,26 @@ function renderUnrealized() {
 
   info.textContent = `快照日：${acc.unrealizedSnapshotDate || '—'}　共 ${acc.unrealized.length} 檔`;
 
-  tb.innerHTML = acc.unrealized.map(x => `
+  tb.innerHTML = acc.unrealized.map(x => {
+    const priceClass = x._priceUpdated ? 'price-updated-cell' : '';
+    const failedTag = (x._priceUpdated === false) ? '<span class="price-failed-tag" title="無法從 Yahoo 取得即時價">未取得</span>' : '';
+    return `
     <tr>
       <td>${x.code}</td>
-      <td>${x.name}</td>
+      <td>${x.name}${failedTag}</td>
       <td>${x.category}</td>
       <td>${fmt(x.qty)}</td>
-      <td>${fmt(x.price, {decimals:2})}</td>
-      <td>${fmt(x.marketValue)}</td>
+      <td class="${priceClass}">${fmt(x.price, {decimals:2})}</td>
+      <td class="${priceClass}">${fmt(x.marketValue)}</td>
       <td>${fmt(x.cost)}</td>
       <td>${fmt(x.avgCost, {decimals:4})}</td>
       <td>${fmt(x.fee)}</td>
       <td>${fmt(x.tax)}</td>
       <td>${fmt(x.interest)}</td>
-      <td class="${plClass(x.pl)}">${fmt(x.pl, {sign:true})}</td>
-      <td class="${plClass(x.pl)}">${x.rate || (x.cost ? fmtPct(x.pl/x.cost*100) : '—')}</td>
+      <td class="${plClass(x.pl)} ${priceClass}">${fmt(x.pl, {sign:true})}</td>
+      <td class="${plClass(x.pl)} ${priceClass}">${x.rate || (x.cost ? fmtPct(x.pl/x.cost*100) : '—')}</td>
     </tr>
-  `).join('');
+  `;}).join('');
 
   // 快照表
   snapBody.innerHTML = (acc.snapshots || []).slice().reverse().map(s => `
@@ -2439,6 +2633,417 @@ async function addMarginCallPayout(mc) {
   toast('已新增領回', 'ok');
 }
 
+// ============================================================
+// 股利紀錄
+// ============================================================
+
+function divGenId() {
+  return 'D-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+}
+
+function renderDividends() {
+  const acc = getCurrentAccount();
+  const list = document.getElementById('dividendList');
+  if (!list) return;
+
+  if (!acc) {
+    list.innerHTML = '<div class="empty-state">尚未選擇帳戶</div>';
+    ['divTotalCash','divTotalStock','divEntryCount','divStockCount'].forEach(id => setVal(id, '—'));
+    return;
+  }
+
+  const div = acc.dividends || { aggregates: [], entries: [] };
+  const byCode = computeDividendByCode(acc);
+  const totalCash = byCode.reduce((s, x) => s + x.cash, 0);
+  const totalStock = byCode.reduce((s, x) => s + x.stock, 0);
+
+  setVal('divTotalCash', totalCash);
+  setVal('divTotalStock', totalStock);
+  setVal('divEntryCount', div.entries.length);
+  setVal('divStockCount', byCode.length);
+
+  if (!byCode.length && !div.entries.length) {
+    list.innerHTML = '<div class="empty-state">尚無股利紀錄。可匯入券商「除權息總覽」累計檔，或新增逐筆紀錄。</div>';
+    return;
+  }
+
+  const mode = document.getElementById('divViewMode')?.value || 'byStock';
+  if (mode === 'byStock') list.innerHTML = renderDividendsByStock(byCode);
+  else if (mode === 'byEntry') list.innerHTML = renderDividendsByEntry(div.entries, div.aggregates);
+  else if (mode === 'byYear') list.innerHTML = renderDividendsByYear(div.entries, div.aggregates);
+
+  bindDividendEvents();
+}
+
+function renderDividendsByStock(byCode) {
+  if (!byCode.length) return '<div class="empty-state">無資料</div>';
+  const rows = byCode.slice().sort((a, b) => b.cash - a.cash).map(s => {
+    const tag = s.mode === 'detailed'
+      ? '<span class="dividend-mode-tag detailed">逐筆</span>'
+      : '<span class="dividend-mode-tag aggregate">累計</span>';
+    const entryCount = s.entries.length;
+    return `
+      <tr class="dividend-stock-row" data-code="${s.code}">
+        <td><strong>${s.code}</strong></td>
+        <td>${s.name}${tag}</td>
+        <td class="pos">${fmt(s.cash)}</td>
+        <td>${s.stock ? fmt(s.stock) : '—'}</td>
+        <td>${entryCount > 0 ? entryCount + ' 筆' : '—'}</td>
+        <td>
+          <button class="btn-mini" data-act="add-entry" data-code="${s.code}" data-name="${s.name.replace(/"/g,'&quot;')}">＋ 新增逐筆</button>
+          ${s.mode === 'aggregate' ? `<button class="btn-mini" data-act="edit-aggregate" data-code="${s.code}">編輯累計</button>` : ''}
+          <button class="btn-mini danger" data-act="del-stock" data-code="${s.code}">刪除</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  // 展開逐筆紀錄
+  const detailRows = byCode
+    .filter(s => s.entries.length > 0)
+    .map(s => {
+      const entries = s.entries.slice().sort((a, b) => (b.payDate || b.exDate || '').localeCompare(a.payDate || a.exDate || ''));
+      const inner = entries.map(e => `
+        <tr>
+          <td>${e.exDate || '—'}</td>
+          <td>${e.payDate || '—'}</td>
+          <td>${e.note || ''}</td>
+          <td class="pos">${fmt(e.cash || 0)}</td>
+          <td>${e.stockShares ? fmt(e.stockShares) : '—'}</td>
+          <td>${fmt(e.tax || 0)}</td>
+          <td>
+            <button class="btn-mini" data-act="edit-entry" data-id="${e.id}">編輯</button>
+            <button class="btn-mini danger" data-act="del-entry" data-id="${e.id}">刪</button>
+          </td>
+        </tr>
+      `).join('');
+      return `
+        <tr class="month-detail-row"><td colspan="6">
+          <div class="nested" style="padding:14px">
+            <h4>${s.code} ${s.name} - 逐筆紀錄（${entries.length} 筆）</h4>
+            <table class="dividend-entry-table">
+              <thead><tr><th>除息日</th><th>發放日</th><th>備註</th><th>現金</th><th>股票股數</th><th>扣繳稅</th><th></th></tr></thead>
+              <tbody>${inner}</tbody>
+            </table>
+          </div>
+        </td></tr>
+      `;
+    }).join('');
+
+  return `
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr>
+          <th>代號</th><th>名稱</th><th>現金股利合計</th><th>股票股利股數</th><th>逐筆紀錄</th><th>操作</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    ${detailRows ? `<div style="margin-top:18px"><h3>逐筆紀錄展開</h3><table class="data-table"><tbody>${detailRows}</tbody></table></div>` : ''}
+  `;
+}
+
+function renderDividendsByEntry(entries, aggregates) {
+  if (!entries.length) {
+    return '<div class="empty-state">尚無逐筆紀錄。從「以股票檢視」點某檔的「＋ 新增逐筆」即可加入。</div>';
+  }
+  const sorted = entries.slice().sort((a, b) => (b.payDate || b.exDate || '').localeCompare(a.payDate || a.exDate || ''));
+  const rows = sorted.map(e => `
+    <tr>
+      <td>${e.exDate || '—'}</td>
+      <td>${e.payDate || '—'}</td>
+      <td>${e.code}</td>
+      <td>${e.name || ''}</td>
+      <td class="pos">${fmt(e.cash || 0)}</td>
+      <td>${e.stockShares ? fmt(e.stockShares) : '—'}</td>
+      <td>${fmt(e.tax || 0)}</td>
+      <td>${e.note || ''}</td>
+      <td>
+        <button class="btn-mini" data-act="edit-entry" data-id="${e.id}">編輯</button>
+        <button class="btn-mini danger" data-act="del-entry" data-id="${e.id}">刪</button>
+      </td>
+    </tr>
+  `).join('');
+  return `
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr>
+          <th>除息日</th><th>發放日</th><th>代號</th><th>名稱</th><th>現金</th><th>股票股數</th><th>扣繳稅</th><th>備註</th><th>操作</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderDividendsByYear(entries, aggregates) {
+  // 把逐筆按年份合計，累計（沒日期）歸為「未分類」
+  const byYear = new Map();
+  const ensure = (y) => {
+    if (!byYear.has(y)) byYear.set(y, { year: y, cash: 0, stock: 0, count: 0, codes: new Set() });
+    return byYear.get(y);
+  };
+  for (const e of entries) {
+    const d = e.payDate || e.exDate || '';
+    const y = (d.match(/^(\d{4})/) || [])[1] || '未分類';
+    const r = ensure(y);
+    r.cash += (e.cash || 0);
+    r.stock += (e.stockShares || 0);
+    r.count++;
+    r.codes.add(e.code);
+  }
+  // 累計（沒逐筆日期的）整體歸到「無日期累計」
+  const aggOnly = aggregates.filter(a => !entries.some(e => e.code === a.code));
+  if (aggOnly.length > 0) {
+    const r = ensure('無日期累計');
+    for (const a of aggOnly) {
+      r.cash += (a.cashTotal || 0);
+      r.stock += (a.stockTotal || 0);
+      r.codes.add(a.code);
+    }
+  }
+
+  if (!byYear.size) return '<div class="empty-state">無資料</div>';
+
+  const sorted = [...byYear.values()].sort((a, b) => {
+    if (a.year === '無日期累計') return 1;
+    if (b.year === '無日期累計') return -1;
+    return b.year.localeCompare(a.year);
+  });
+  const rows = sorted.map(y => `
+    <tr>
+      <td><strong>${y.year}</strong></td>
+      <td>${y.codes.size} 檔</td>
+      <td class="pos">${fmt(y.cash)}</td>
+      <td>${y.stock ? fmt(y.stock) : '—'}</td>
+      <td>${y.count > 0 ? y.count + ' 筆逐筆' : '累計模式'}</td>
+    </tr>
+  `).join('');
+  return `
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr>
+          <th>年度</th><th>配息檔數</th><th>現金股利</th><th>股票股利</th><th>來源</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function bindDividendEvents() {
+  document.querySelectorAll('#dividendList button[data-act], #dividendList .dividend-stock-row').forEach(el => {
+    if (el.tagName === 'TR') {
+      // 點 row 不做事（避免和按鈕衝突）
+      return;
+    }
+    el.onclick = async (e) => {
+      e.stopPropagation();
+      const acc = getCurrentAccount();
+      const act = el.dataset.act;
+
+      if (act === 'add-entry') {
+        await addDividendEntry(el.dataset.code, el.dataset.name);
+      } else if (act === 'edit-entry') {
+        const entry = acc.dividends.entries.find(x => x.id === el.dataset.id);
+        if (entry) await editDividendEntry(entry);
+      } else if (act === 'del-entry') {
+        const ok = await confirmDialog('刪除逐筆紀錄', '確定刪除這筆股利紀錄？');
+        if (ok) {
+          acc.dividends.entries = acc.dividends.entries.filter(x => x.id !== el.dataset.id);
+          save(); renderAll();
+        }
+      } else if (act === 'edit-aggregate') {
+        const a = acc.dividends.aggregates.find(x => x.code === el.dataset.code);
+        if (a) await editDividendAggregate(a);
+      } else if (act === 'del-stock') {
+        const ok = await confirmDialog('刪除股票所有股利紀錄', `確定刪除「${el.dataset.code}」的所有股利資料（累計+逐筆）？`);
+        if (ok) {
+          acc.dividends.aggregates = acc.dividends.aggregates.filter(x => x.code !== el.dataset.code);
+          acc.dividends.entries = acc.dividends.entries.filter(x => x.code !== el.dataset.code);
+          save(); renderAll();
+        }
+      }
+    };
+  });
+}
+
+async function addDividendEntry(presetCode = '', presetName = '') {
+  const acc = getCurrentAccount();
+  if (!acc) return toast('請先選擇帳戶', 'err');
+
+  const today = todayStr().replace(/\//g, '-');
+  const result = await showModal({
+    title: '新增逐筆股利紀錄',
+    html: `
+      <div style="display:grid;gap:10px;min-width:380px">
+        <label>股票代號<input type="text" id="d-code" value="${presetCode}" placeholder="例：2330"></label>
+        <label>股票名稱<input type="text" id="d-name" value="${presetName.replace(/"/g,'&quot;')}" placeholder="例：台積電"></label>
+        <label>除息日（除權日）<input type="date" id="d-exdate"></label>
+        <label>發放日<input type="date" id="d-paydate" value="${today}"></label>
+        <label>現金股利<input type="number" id="d-cash" placeholder="例：3000" step="0.01"></label>
+        <label>股票股利股數（無則填 0）<input type="number" id="d-stock" value="0"></label>
+        <label>扣繳稅款<input type="number" id="d-tax" value="0"></label>
+        <label>備註<input type="text" id="d-note" placeholder="例：第二季配息"></label>
+      </div>
+    `,
+    onConfirm: (body) => ({
+      code: body.querySelector('#d-code').value.trim(),
+      name: body.querySelector('#d-name').value.trim(),
+      exDate: body.querySelector('#d-exdate').value,
+      payDate: body.querySelector('#d-paydate').value,
+      cash: parseFloat(body.querySelector('#d-cash').value) || 0,
+      stockShares: parseFloat(body.querySelector('#d-stock').value) || 0,
+      tax: parseFloat(body.querySelector('#d-tax').value) || 0,
+      note: body.querySelector('#d-note').value.trim()
+    })
+  });
+  if (!result || !result.code) return;
+
+  acc.dividends.entries.push({
+    id: divGenId(),
+    code: result.code,
+    name: result.name,
+    exDate: result.exDate ? Parsers.formatDate(result.exDate) : '',
+    payDate: result.payDate ? Parsers.formatDate(result.payDate) : '',
+    cash: result.cash,
+    stockShares: result.stockShares,
+    tax: result.tax,
+    note: result.note
+  });
+  save();
+  renderAll();
+  toast('已新增逐筆紀錄', 'ok');
+}
+
+async function editDividendEntry(entry) {
+  const result = await showModal({
+    title: '編輯股利紀錄',
+    html: `
+      <div style="display:grid;gap:10px;min-width:380px">
+        <label>股票代號<input type="text" id="d-code" value="${entry.code}"></label>
+        <label>股票名稱<input type="text" id="d-name" value="${(entry.name||'').replace(/"/g,'&quot;')}"></label>
+        <label>除息日<input type="date" id="d-exdate" value="${(entry.exDate||'').replace(/\//g,'-')}"></label>
+        <label>發放日<input type="date" id="d-paydate" value="${(entry.payDate||'').replace(/\//g,'-')}"></label>
+        <label>現金股利<input type="number" id="d-cash" value="${entry.cash||0}" step="0.01"></label>
+        <label>股票股利股數<input type="number" id="d-stock" value="${entry.stockShares||0}"></label>
+        <label>扣繳稅款<input type="number" id="d-tax" value="${entry.tax||0}"></label>
+        <label>備註<input type="text" id="d-note" value="${(entry.note||'').replace(/"/g,'&quot;')}"></label>
+      </div>
+    `,
+    onConfirm: (body) => ({
+      code: body.querySelector('#d-code').value.trim(),
+      name: body.querySelector('#d-name').value.trim(),
+      exDate: body.querySelector('#d-exdate').value,
+      payDate: body.querySelector('#d-paydate').value,
+      cash: parseFloat(body.querySelector('#d-cash').value) || 0,
+      stockShares: parseFloat(body.querySelector('#d-stock').value) || 0,
+      tax: parseFloat(body.querySelector('#d-tax').value) || 0,
+      note: body.querySelector('#d-note').value.trim()
+    })
+  });
+  if (!result) return;
+  Object.assign(entry, {
+    code: result.code,
+    name: result.name,
+    exDate: result.exDate ? Parsers.formatDate(result.exDate) : '',
+    payDate: result.payDate ? Parsers.formatDate(result.payDate) : '',
+    cash: result.cash,
+    stockShares: result.stockShares,
+    tax: result.tax,
+    note: result.note
+  });
+  save();
+  renderAll();
+  toast('已更新', 'ok');
+}
+
+async function editDividendAggregate(a) {
+  const result = await showModal({
+    title: `編輯累計股利 - ${a.code}`,
+    html: `
+      <div style="display:grid;gap:10px;min-width:380px">
+        <label>股票代號<input type="text" id="d-code" value="${a.code}"></label>
+        <label>股票名稱<input type="text" id="d-name" value="${(a.name||'').replace(/"/g,'&quot;')}"></label>
+        <label>累計現金股利<input type="number" id="d-cash" value="${a.cashTotal||0}" step="0.01"></label>
+        <label>累計股票股利股數<input type="number" id="d-stock" value="${a.stockTotal||0}"></label>
+      </div>
+    `,
+    onConfirm: (body) => ({
+      code: body.querySelector('#d-code').value.trim(),
+      name: body.querySelector('#d-name').value.trim(),
+      cashTotal: parseFloat(body.querySelector('#d-cash').value) || 0,
+      stockTotal: parseFloat(body.querySelector('#d-stock').value) || 0
+    })
+  });
+  if (!result) return;
+  Object.assign(a, result);
+  save();
+  renderAll();
+  toast('已更新', 'ok');
+}
+
+async function importDividendFile(file) {
+  const acc = getCurrentAccount();
+  if (!acc) return toast('請先選擇帳戶', 'err');
+
+  try {
+    const result = await Parsers.parseDividendsFile(file);
+    if (!result.items || !result.items.length) {
+      return toast('檔案內沒有可解析的股利資料', 'err');
+    }
+
+    const ok = await confirmDialog(
+      '匯入累計股利',
+      `從檔案讀到 ${result.items.length} 檔股票的累計股利資料，將${acc.dividends.aggregates.length > 0 ? '<b>取代</b>' : '匯入'}該帳戶的累計紀錄。<br><br>逐筆紀錄不受影響。確定？`
+    );
+    if (!ok) return;
+
+    acc.dividends.aggregates = result.items.map(x => ({
+      code: x.code,
+      name: x.name,
+      cashTotal: x.cashTotal,
+      stockTotal: x.stockTotal
+    }));
+    save();
+    renderAll();
+    toast(`已匯入 ${result.items.length} 檔累計股利`, 'ok');
+  } catch (e) {
+    console.error(e);
+    toast('匯入失敗：' + e.message, 'err');
+  }
+}
+
+function exportDividendsExcel() {
+  const acc = getCurrentAccount();
+  if (!acc) return toast('請先選擇帳戶', 'err');
+  const byCode = computeDividendByCode(acc);
+  if (!byCode.length) return toast('沒有資料可匯出', 'err');
+
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1：以股票檢視
+  const h1 = ['代號','名稱','模式','現金股利合計','股票股利股數','逐筆紀錄筆數'];
+  const r1 = byCode.map(s => [
+    s.code, s.name, s.mode === 'detailed' ? '逐筆' : '累計',
+    s.cash, s.stock, s.entries.length
+  ]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([h1, ...r1]), '以股票');
+
+  // Sheet 2：逐筆紀錄
+  const entries = acc.dividends.entries;
+  if (entries.length > 0) {
+    const h2 = ['除息日','發放日','代號','名稱','現金股利','股票股數','扣繳稅','備註'];
+    const r2 = entries.slice().sort((a,b) => (b.payDate||b.exDate||'').localeCompare(a.payDate||a.exDate||''))
+      .map(e => [e.exDate||'', e.payDate||'', e.code, e.name||'', e.cash||0, e.stockShares||0, e.tax||0, e.note||'']);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([h2, ...r2]), '逐筆紀錄');
+  }
+
+  const ts = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `股利紀錄_${acc.name}_${ts}.xlsx`);
+  toast('已匯出 Excel', 'ok');
+}
+
 
 function renderLoans() {
   const acc = getCurrentAccount();
@@ -2845,6 +3450,11 @@ function bindEvents() {
       document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
       // 切換頁籤時重新渲染（避免某些子表沒資料的情況）
       renderAll();
+      // 切到未實現損益且本次還沒拓過 → 自動拓一次
+      if (btn.dataset.tab === 'unrealized' && !_priceAutoFetched) {
+        _priceAutoFetched = true;
+        refreshPrices(true).catch(() => {});
+      }
     };
   });
 
@@ -2852,6 +3462,7 @@ function bindEvents() {
   bindChange('accountSelect', (e) => {
     State.currentAccountId = e.target.value;
     State.data.currentAccountId = e.target.value;
+    _priceAutoFetched = false; // 換帳戶 → 重新自動拓一次
     save();
     refreshAccountSelector();
     renderAll();
@@ -2908,6 +3519,22 @@ function bindEvents() {
 
   // 融資回補
   bindClick('btnAddMarginCall', addMarginCall);
+
+  // 即時股價
+  bindClick('btnRefreshPrice', () => refreshPrices(false));
+
+  // 股利紀錄
+  bindClick('btnAddDividend', () => addDividendEntry());
+  bindClick('btnExportDividends', exportDividendsExcel);
+  bindChange('divViewMode', renderDividends);
+  const upDiv = document.getElementById('upDividends');
+  if (upDiv) {
+    upDiv.onchange = (e) => {
+      const f = e.target.files[0];
+      if (f) importDividendFile(f);
+      e.target.value = '';
+    };
+  }
 
   // 清空帳戶
   bindClick('btnClearAccount', async () => {
