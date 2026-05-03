@@ -1778,18 +1778,50 @@ function setPriceStatus(text, kind = '') {
   el.className = 'price-status ' + kind;
 }
 
-// 把代號轉成 Yahoo 格式
-// 4 位數字 → 上市（.TW）；5-6 位數字（00...或 00...B）→ 多半是 ETF/上市
-// 4 位英數混合 → 興櫃，可能用 .TWO（上櫃）；保險起見都先試 .TW
-function toYahooSymbols(codes) {
-  return codes.map(c => {
-    const code = String(c).trim();
-    if (!code) return null;
-    // 已含 .TW 或 .TWO 的不動
-    if (/\.TWO?$/i.test(code)) return code;
-    // 英文字母結尾（如 KY、B、R）→ 通常是上市
-    return code + '.TW';
-  }).filter(Boolean);
+// ---------- TWSE/TPEX OpenAPI 快取（避免重複拉全市場） ----------
+let _priceCache = {
+  twseAt: 0,    // 上次抓 TWSE 的時間（毫秒）
+  twseMap: null, // 代號 → {price, name}
+  tpexAt: 0,
+  tpexMap: null
+};
+const PRICE_CACHE_TTL = 5 * 60 * 1000; // 5 分鐘
+
+async function fetchTWSEPrices() {
+  // 證交所每日收盤行情（全市場一次拿）
+  // 欄位範例：{ Code, Name, ClosingPrice, ChangePrice, ... }
+  const url = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_AVG_ALL';
+  const resp = await fetch(url, { method: 'GET' });
+  if (!resp.ok) throw new Error(`TWSE HTTP ${resp.status}`);
+  const data = await resp.json();
+  const map = new Map();
+  for (const r of data) {
+    const code = String(r.Code || '').trim();
+    const price = parseFloat(r.ClosingPrice);
+    if (code && !isNaN(price) && price > 0) {
+      map.set(code, { price, name: r.Name || '' });
+    }
+  }
+  return map;
+}
+
+async function fetchTPEXPrices() {
+  // 櫃買中心上櫃每日收盤
+  const url = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes';
+  const resp = await fetch(url, { method: 'GET' });
+  if (!resp.ok) throw new Error(`TPEX HTTP ${resp.status}`);
+  const data = await resp.json();
+  const map = new Map();
+  for (const r of data) {
+    // 欄位名稱可能是 SecuritiesCompanyCode 或 Code
+    const code = String(r.SecuritiesCompanyCode || r.Code || '').trim();
+    const price = parseFloat(r.Close || r.ClosingPrice);
+    const name = r.CompanyName || r.Name || '';
+    if (code && !isNaN(price) && price > 0) {
+      map.set(code, { price, name });
+    }
+  }
+  return map;
 }
 
 // 主流程：抓股價並覆寫到目前帳戶的 unrealized
@@ -1802,48 +1834,49 @@ async function refreshPrices(silent = false) {
   }
 
   _priceFetching = true;
-  setPriceStatus('正在更新…', 'loading');
-
-  // 收集代號（去重）
-  const codes = [...new Set(acc.unrealized.map(x => x.code).filter(Boolean))];
-  const symbols = toYahooSymbols(codes);
+  setPriceStatus('正在抓取證交所/櫃買中心資料…', 'loading');
 
   try {
-    // Yahoo Finance batch quote API（透過 corsproxy.io 繞過 CORS）
-    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols.join(',')}`;
-    const proxied = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-    const resp = await fetch(proxied, { method: 'GET' });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    const results = data?.quoteResponse?.result || [];
+    const now = Date.now();
 
-    if (!results.length) {
-      throw new Error('Yahoo 沒回傳任何結果');
+    // TWSE：5 分鐘內有快取就用
+    if (!_priceCache.twseMap || (now - _priceCache.twseAt) > PRICE_CACHE_TTL) {
+      try {
+        _priceCache.twseMap = await fetchTWSEPrices();
+        _priceCache.twseAt = now;
+      } catch (e) {
+        console.warn('TWSE 抓取失敗，繼續嘗試 TPEX：', e);
+        if (!_priceCache.twseMap) _priceCache.twseMap = new Map();
+      }
     }
 
-    // 建立代號 → 現價的對照（去除 .TW/.TWO 字尾）
-    const priceMap = new Map();
-    for (const r of results) {
-      const sym = (r.symbol || '').replace(/\.TWO?$/i, '');
-      if (r.regularMarketPrice != null) {
-        priceMap.set(sym, {
-          price: r.regularMarketPrice,
-          change: r.regularMarketChange || 0,
-          changePct: r.regularMarketChangePercent || 0,
-          name: r.shortName || r.longName || ''
-        });
+    // TPEX：5 分鐘內有快取就用
+    if (!_priceCache.tpexMap || (now - _priceCache.tpexAt) > PRICE_CACHE_TTL) {
+      try {
+        _priceCache.tpexMap = await fetchTPEXPrices();
+        _priceCache.tpexAt = now;
+      } catch (e) {
+        console.warn('TPEX 抓取失敗：', e);
+        if (!_priceCache.tpexMap) _priceCache.tpexMap = new Map();
       }
+    }
+
+    const twse = _priceCache.twseMap;
+    const tpex = _priceCache.tpexMap;
+
+    if (twse.size === 0 && tpex.size === 0) {
+      throw new Error('證交所和櫃買中心都抓不到資料（網路問題或服務暫時無法使用）');
     }
 
     // 套用：覆寫 unrealized 表的 price、marketValue、pl、rate
     let updated = 0, failed = [];
     for (const x of acc.unrealized) {
-      const info = priceMap.get(x.code);
+      const code = String(x.code || '').trim();
+      const info = twse.get(code) || tpex.get(code);
       if (info && info.price > 0) {
         x.price = info.price;
         x.marketValue = info.price * (x.qty || 0);
         x.pl = x.marketValue - (x.cost || 0);
-        // 報酬率重新算
         if (x.cost > 0) {
           const r = (x.pl / x.cost) * 100;
           x.rate = (r > 0 ? '+' : '') + r.toFixed(2) + '%';
@@ -1858,12 +1891,13 @@ async function refreshPrices(silent = false) {
     }
 
     save();
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    const ts = new Date();
+    const timeStr = ts.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    const totalSrc = `（上市 ${twse.size} 檔，上櫃 ${tpex.size} 檔）`;
     if (failed.length === 0) {
-      setPriceStatus(`✓ 已更新 ${updated} 檔，最後更新 ${timeStr}`, 'success');
+      setPriceStatus(`✓ 已更新 ${updated} 檔 ${totalSrc}，最後更新 ${timeStr}`, 'success');
     } else {
-      setPriceStatus(`✓ ${updated} 檔成功，${failed.length} 檔失敗 (${failed.slice(0,3).join(',')}${failed.length>3?'...':''})，更新時間 ${timeStr}`, 'success');
+      setPriceStatus(`✓ ${updated} 檔成功，${failed.length} 檔找不到 (${failed.slice(0,3).join(',')}${failed.length>3?'...':''})，更新時間 ${timeStr}`, 'success');
     }
     renderAll();
   } catch (e) {
