@@ -754,6 +754,105 @@ section .data-table:not(.table-scroll *) {
 .match-source-tag.manual { background: var(--success-light); color: var(--success); }
 .match-source-tag.unmatched { background: var(--danger-light); color: var(--danger); }
 
+/* ============ 調整金額按鈕 ============ */
+.adjust-btn {
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  font-family: inherit;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.adjust-btn:hover {
+  background: var(--surface-2);
+  border-style: solid;
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.adjust-btn.has-value {
+  border-style: solid;
+  font-weight: 600;
+}
+.adjust-btn.has-value.pos {
+  border-color: var(--success);
+  color: var(--success);
+  background: var(--success-light);
+}
+.adjust-btn.has-value.neg {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-light);
+}
+
+/* ============ 調整金額按鈕 ============ */
+.adjust-btn {
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.adjust-btn:hover {
+  background: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary-dark);
+}
+.adjust-btn.has-value {
+  background: var(--hl-bg);
+  border-color: var(--hl);
+  border-style: solid;
+  color: var(--text);
+  font-weight: 600;
+}
+.adjust-btn.has-value:hover {
+  background: var(--primary-light);
+}
+.adjust-btn.pos { color: var(--success); }
+.adjust-btn.neg { color: var(--danger); }
+
+/* 對話框內的計算結果列 */
+.adjust-summary {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.adjust-summary .row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+}
+.adjust-summary .row.total {
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding-top: 6px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.adjust-summary .row.actual {
+  font-weight: 600;
+  color: var(--primary-dark);
+}
+.adjust-help {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
 /* ============ 借款卡片 ============ */
 .loan-card {
   background: var(--surface);

@@ -457,10 +457,12 @@ async function importRealized(file) {
       const saved = acc.adjustments[k];
       if (saved) {
         r.adjust = saved.adjust || 0;
+        r.refund = saved.refund || 0;
         r.note = saved.note || '';
-        if (saved.adjust || saved.note) restored++;
+        if (saved.adjust || saved.refund || saved.note) restored++;
       } else {
         r.adjust = 0;
+        r.refund = 0;
         r.note = '';
       }
     }
@@ -498,6 +500,15 @@ function brokerName(b) {
 
 function realizedKey(r) {
   return `${r.code}|${r.sellDate}|${r.qty}|${r.sellPrice}|${r.buyDate}|${r.buyPrice}`;
+}
+
+// 已實現損益的「總調整 = 盈虧調整 + 回補資金」
+function adjustTotal(r) {
+  return (r.adjust || 0) + (r.refund || 0);
+}
+// 實際盈虧 = 原始盈虧 + 總調整
+function actualPL(r) {
+  return (r.pl || 0) + adjustTotal(r);
 }
 
 // ============================================================
@@ -549,15 +560,16 @@ function exportRealizedExcel() {
     '代號','名稱','類別',
     '賣出日','賣價','買進日','買價',
     '數量','沖銷成本','手續費','交易稅',
-    '利息','融券手續費','調整金額','備註',
+    '利息','融券手續費','盈虧調整','回補資金','調整合計','備註',
     '盈虧','實際盈虧'
   ];
   const rows = acc.realized.map(r => [
     r.code, r.name, r.sellCategory,
     r.sellDate, r.sellPrice, r.buyDate, r.buyPrice,
     r.qty, r.cost, r.fee, r.tax,
-    r.interest || 0, r.shortFee || 0, r.adjust || 0, r.note || '',
-    r.pl, (r.pl + (r.adjust || 0))
+    r.interest || 0, r.shortFee || 0,
+    r.adjust || 0, r.refund || 0, adjustTotal(r), r.note || '',
+    r.pl, actualPL(r)
   ]);
   const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
   const wb = XLSX.utils.book_new();
@@ -665,7 +677,7 @@ function aggregateAccount(acc) {
   const unrealizedPL= acc.unrealized.reduce((s,x) => s+x.pl, 0);
   const totalInterest = acc.realized.reduce((s,r) => s+(r.interest||0), 0);
   const totalShortFee = acc.realized.reduce((s,r) => s+(r.shortFee||0), 0);
-  const realizedPLRaw = acc.realized.reduce((s,r) => s + (r.pl + (r.adjust||0)), 0);
+  const realizedPLRaw = acc.realized.reduce((s,r) => s + actualPL(r), 0);
 
   // 借款利息累計
   const loans = acc.loans || [];
@@ -947,7 +959,7 @@ function buildMonthlyData(acc) {
     m.realizedPL += (r.pl || 0);
     m.interest += (r.interest || 0);
     m.shortFee += (r.shortFee || 0);
-    m.adjust += (r.adjust || 0);
+    m.adjust += adjustTotal(r);
     m.realizedItems.push(r);
   }
 
@@ -1084,7 +1096,8 @@ function renderMonthDetail(m) {
     html.push('<th>代號</th><th>名稱</th><th>類別</th><th>賣出日</th><th>買進日</th><th>數量</th><th>賣價</th><th>買價</th><th>盈虧</th><th>利息</th><th>融券費</th><th>調整</th><th>實際</th>');
     html.push('</tr></thead><tbody>');
     for (const r of m.realizedItems) {
-      const actual = r.pl + (r.adjust || 0);
+      const adjT = adjustTotal(r);
+      const actual = actualPL(r);
       html.push(`<tr>
         <td>${r.code}</td><td>${r.name||''}</td><td>${r.sellCategory||''}</td>
         <td>${r.sellDate}</td><td>${r.buyDate||'—'}</td>
@@ -1094,7 +1107,7 @@ function renderMonthDetail(m) {
         <td class="${plClass(r.pl)}">${fmt(r.pl,{sign:true})}</td>
         <td>${fmt(r.interest||0)}</td>
         <td>${fmt(r.shortFee||0)}</td>
-        <td class="${plClass(r.adjust||0)}">${(r.adjust||0)?fmt(r.adjust,{sign:true}):'—'}</td>
+        <td class="${plClass(adjT)}">${adjT?fmt(adjT,{sign:true}):'—'}</td>
         <td class="${plClass(actual)}"><strong>${fmt(actual,{sign:true})}</strong></td>
       </tr>`);
     }
@@ -1355,6 +1368,105 @@ async function showManualMatchDialog(realized) {
   toast('已手動配對，利息與融券手續費已更新', 'ok');
 }
 
+// ============================================================
+// 編輯調整金額對話框
+// 兩個獨立欄位：盈虧調整、回補資金（被迫沖銷的補繳款）
+// 都會直接相加成「調整總額」，再加到原始盈虧得到實際盈虧
+// ============================================================
+async function showAdjustDialog(realized) {
+  const acc = getCurrentAccount();
+  if (!acc) return;
+
+  const initAdjust = realized.adjust || 0;
+  const initRefund = realized.refund || 0;
+  const initNote = realized.note || '';
+  const original = realized.pl || 0;
+
+  const result = await showModal({
+    title: `編輯調整 - ${realized.code} ${realized.name} ${realized.sellDate}`,
+    html: `
+      <div style="min-width:460px;max-width:560px">
+        <div style="background:var(--surface-2);padding:10px 12px;border-radius:6px;margin-bottom:12px;font-size:13px">
+          原始盈虧：<strong class="${plClass(original)}">${fmt(original, {sign:true})}</strong>
+        </div>
+
+        <label style="display:block;margin-bottom:14px">
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px">盈虧調整</div>
+          <input type="number" id="adj-pl" value="${initAdjust}" step="any" style="width:100%">
+          <div style="font-size:11px;color:var(--text-muted);margin-top:3px">
+            修正券商給的盈虧錯誤（如轉融券沖銷後的價差）。正值=往上調，負值=往下調
+          </div>
+        </label>
+
+        <label style="display:block;margin-bottom:14px">
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px">回補資金</div>
+          <input type="number" id="adj-refund" value="${initRefund}" step="any" style="width:100%">
+          <div style="font-size:11px;color:var(--text-muted);margin-top:3px">
+            被迫沖銷產生的補繳款（多付出去填負值，意外退回填正值）
+          </div>
+        </label>
+
+        <label style="display:block;margin-bottom:14px">
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px">備註</div>
+          <input type="text" id="adj-note" value="${initNote.replace(/"/g,'&quot;')}" style="width:100%" placeholder="例：11/15 轉融券沖銷">
+        </label>
+
+        <div style="background:var(--primary-light);padding:10px 12px;border-radius:6px;font-size:13px" id="adj-preview">
+          <div>調整合計：<strong id="adj-preview-total">—</strong></div>
+          <div style="margin-top:4px">實際盈虧：<strong id="adj-preview-actual">—</strong></div>
+        </div>
+      </div>
+    `,
+    confirmText: '儲存',
+    onConfirm: (body) => ({
+      adjust: parseFloat(body.querySelector('#adj-pl').value) || 0,
+      refund: parseFloat(body.querySelector('#adj-refund').value) || 0,
+      note: body.querySelector('#adj-note').value
+    })
+  });
+
+  // modal 渲染後綁即時預覽
+  setTimeout(() => {
+    const adjI = document.getElementById('adj-pl');
+    const refI = document.getElementById('adj-refund');
+    const totalEl = document.getElementById('adj-preview-total');
+    const actualEl = document.getElementById('adj-preview-actual');
+    if (!adjI || !refI || !totalEl || !actualEl) return;
+
+    const recalc = () => {
+      const a = parseFloat(adjI.value) || 0;
+      const r = parseFloat(refI.value) || 0;
+      const total = a + r;
+      const actual = original + total;
+      const tCls = total > 0 ? 'pos' : (total < 0 ? 'neg' : '');
+      const aCls = actual > 0 ? 'pos' : (actual < 0 ? 'neg' : '');
+      totalEl.innerHTML = `<span class="${tCls}">${fmt(total, {sign:true})}</span>`;
+      actualEl.innerHTML = `<span class="${aCls}">${fmt(actual, {sign:true})}</span>`;
+    };
+    adjI.oninput = recalc;
+    refI.oninput = recalc;
+    recalc();
+  }, 0);
+
+  if (!result) return;
+
+  realized.adjust = result.adjust;
+  realized.refund = result.refund;
+  realized.note = result.note;
+
+  // 同步存到 adjustments，這樣重新匯入會被還原
+  const k = realizedKey(realized);
+  acc.adjustments[k] = {
+    adjust: result.adjust,
+    refund: result.refund,
+    note: result.note
+  };
+
+  save();
+  renderAll();
+  toast('已儲存調整', 'ok');
+}
+
 function renderRealized() {
   const acc = getCurrentAccount();
   const tb = document.querySelector('#realizedTable tbody');
@@ -1377,8 +1489,8 @@ function renderRealized() {
   // 統計用所有資料（不只篩選後）
   for (const r of acc.realized) {
     original += r.pl;
-    adjust += (r.adjust || 0);
-    actual += r.pl + (r.adjust || 0);
+    adjust += adjustTotal(r);
+    actual += actualPL(r);
     interest += (r.interest || 0);
     shortFee += (r.shortFee || 0);
   }
@@ -1393,7 +1505,8 @@ function renderRealized() {
 
   tb.innerHTML = filtered.map((r, idx) => {
     const realIdx = acc.realized.indexOf(r);
-    const actualPL = r.pl + (r.adjust || 0);
+    const adjT = adjustTotal(r);
+    const actual = actualPL(r);
     const isMargin = (r.sellCategory === '融資' || r.sellCategory === '融券');
     let rowClass = '';
     let actionCell = '—';
@@ -1408,6 +1521,15 @@ function renderRealized() {
     } else if (isMargin && (r._matchSource === 'auto' || r._matchSource === 'auto-split')) {
       actionCell = '<span class="match-source-tag auto" title="自動配對">自動</span>';
     }
+
+    // 調整金額按鈕
+    let adjBtnClass = 'adjust-btn';
+    let adjLabel = '＋ 調整';
+    if (adjT !== 0) {
+      adjBtnClass += ' has-value ' + (adjT > 0 ? 'pos' : 'neg');
+      adjLabel = fmt(adjT, {sign: true});
+    }
+
     return `
       <tr data-idx="${realIdx}" class="${rowClass}">
         <td>${r.code}</td>
@@ -1423,53 +1545,32 @@ function renderRealized() {
         <td>${fmt(r.tax)}</td>
         <td class="hl">${fmt(r.interest || 0)}</td>
         <td class="hl">${fmt(r.shortFee || 0)}</td>
-        <td class="hl"><input type="number" class="editable-cell" data-field="adjust" value="${r.adjust || 0}"></td>
-        <td><input type="text" class="editable-cell note" data-field="note" value="${(r.note || '').replace(/"/g,'&quot;')}" placeholder="備註…"></td>
+        <td class="hl"><button class="${adjBtnClass}" data-act="edit-adjust" data-idx="${realIdx}">${adjLabel}</button></td>
+        <td title="${(r.note || '').replace(/"/g,'&quot;')}" style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${r.note || '—'}</td>
         <td class="${plClass(r.pl)}">${fmt(r.pl, {sign:true})}</td>
-        <td class="hl ${plClass(actualPL)}">${fmt(actualPL, {sign:true})}</td>
+        <td class="hl ${plClass(actual)}">${fmt(actual, {sign:true})}</td>
         <td>${actionCell}</td>
       </tr>
     `;
   }).join('');
 
-  // 綁定編輯事件
-  tb.querySelectorAll('.editable-cell').forEach(input => {
-    input.addEventListener('change', (e) => {
-      const tr = e.target.closest('tr');
-      const idx = parseInt(tr.dataset.idx, 10);
-      const field = e.target.dataset.field;
-      const r = acc.realized[idx];
-      if (field === 'adjust') {
-        r.adjust = parseFloat(e.target.value) || 0;
-      } else if (field === 'note') {
-        r.note = e.target.value;
-      }
-      // 同步存到 adjustments，這樣重新匯入會被還原
-      const k = realizedKey(r);
-      acc.adjustments[k] = { adjust: r.adjust || 0, note: r.note || '' };
-      save();
-      renderRealized();
-      renderOverview();
-      renderAccount();
-    });
-  });
-
-  // 綁定配對按鈕
+  // 綁定按鈕（配對 + 調整金額）
   tb.querySelectorAll('button[data-act]').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
       const idx = parseInt(btn.dataset.idx, 10);
       const r = acc.realized[idx];
       if (!r) return;
-      if (btn.dataset.act === 'manual-match') await showManualMatchDialog(r);
-      else if (btn.dataset.act === 'unmatch') {
+      const act = btn.dataset.act;
+      if (act === 'manual-match') await showManualMatchDialog(r);
+      else if (act === 'unmatch') {
         delete r._manualMatchTradeKey;
-        // 重跑 enrichment
         Parsers.enrichRealizedWithInterest(acc.realized, acc.trades);
         save();
         renderAll();
         toast('已解除手動配對', 'ok');
       }
+      else if (act === 'edit-adjust') await showAdjustDialog(r);
     };
   });
 }
@@ -2027,7 +2128,7 @@ function buildStockAnalysis(acc) {
     const s = ensure(r.code, r.name);
     s.realizedCount++;
     s.realizedPL += (r.pl || 0);
-    s.adjust += (r.adjust || 0);
+    s.adjust += adjustTotal(r);
     s.interest += (r.interest || 0);
     s.shortFee += (r.shortFee || 0);
     s.realizedItems.push(r);
@@ -2297,7 +2398,8 @@ function renderStockDetail(s) {
     html.push('<th>賣出日</th><th>買進日</th><th>類別</th><th>數量</th><th>賣價</th><th>買價</th><th>盈虧</th><th>利息</th><th>調整</th><th>實際</th>');
     html.push('</tr></thead><tbody>');
     for (const r of s.realizedItems) {
-      const actual = r.pl + (r.adjust || 0);
+      const adjT = adjustTotal(r);
+      const actual = actualPL(r);
       html.push(`<tr>
         <td>${r.sellDate}</td>
         <td>${r.buyDate||'—'}</td>
@@ -2307,7 +2409,7 @@ function renderStockDetail(s) {
         <td>${fmt(r.buyPrice,{decimals:2})}</td>
         <td class="${plClass(r.pl)}">${fmt(r.pl,{sign:true})}</td>
         <td>${fmt(r.interest||0)}</td>
-        <td class="${plClass(r.adjust||0)}">${(r.adjust||0)?fmt(r.adjust,{sign:true}):'—'}</td>
+        <td class="${plClass(adjT)}">${adjT?fmt(adjT,{sign:true}):'—'}</td>
         <td class="${plClass(actual)}"><strong>${fmt(actual,{sign:true})}</strong></td>
       </tr>`);
     }
