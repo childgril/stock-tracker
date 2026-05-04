@@ -186,9 +186,32 @@ html, body { height: 100vh; overflow: hidden; }
 
 main {
   flex: 1;
-  padding: 24px 28px;
+  padding: 24px 28px 0;  /* 底部 padding 移除，避免雙重 */
   min-width: 0;
   height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;  /* main 自己不滾動，由 tab-content 內部處理 */
+}
+
+.tab-content { display: none; }
+.tab-content.active {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;  /* flex 子元素允許收縮 */
+  padding-bottom: 24px;  /* 補 main 拿掉的 padding */
+}
+
+/* 總覽頁不適用「頂部固定」，整頁可滾 */
+#tab-overview.active {
+  overflow-y: auto;
+}
+
+/* 其他頁面：頂部內容自然高度，最後一個區塊（表格）佔滿剩餘空間並內部滾動 */
+.tab-content.active:not(#tab-overview) > .scroll-area {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -291,8 +314,31 @@ button {
   border-color: var(--primary-dark);
 }
 
-.tab-content { display: none; }
-.tab-content.active { display: block; }
+/* ============ 卡片分組（外框） ============ */
+.card-group {
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow-sm);
+}
+.card-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 0.4px;
+  margin-bottom: 10px;
+  padding-left: 4px;
+}
+.card-group .summary-grid {
+  margin-bottom: 0;
+}
+.card-group .card {
+  background: var(--surface-2);
+  box-shadow: none;
+  border: 1px solid var(--border-light);
+}
 
 /* ============ 卡片摘要 ============ */
 .summary-grid {
@@ -1014,6 +1060,155 @@ section .data-table:not(.table-scroll *) {
   border-color: var(--danger);
   color: var(--danger);
 }
+
+/* ============ 總覽：各帳戶明細（緊湊置中） ============ */
+.ov-account-table-wrap {
+  display: inline-block;
+  max-width: 100%;
+}
+.ov-account-table {
+  width: auto;  /* 內容多寬就多寬，不撐滿 */
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.ov-account-table th, .ov-account-table td {
+  padding: 8px 14px;
+  text-align: center;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ov-account-table tbody tr:last-child td { border-bottom: none; }
+.ov-account-table th:first-child, .ov-account-table td:first-child {
+  text-align: left;
+  font-weight: 600;
+}
+
+/* ============ 總覽：每月損益跨帳戶 ============ */
+.ov-monthly-cross-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.ov-monthly-cross {
+  width: auto;
+  min-width: 100%;
+}
+.ov-monthly-cross th, .ov-monthly-cross td {
+  padding: 8px 14px;
+  text-align: center;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ov-monthly-cross thead th {
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.ov-monthly-cross tbody tr:last-child td { border-bottom: none; }
+.ov-monthly-cross th:first-child, .ov-monthly-cross td:first-child {
+  text-align: left;
+  font-weight: 600;
+  background: var(--surface-2);
+  position: sticky;
+  left: 0;
+  z-index: 4;
+}
+.ov-monthly-cross thead th:first-child { z-index: 6; }
+.ov-monthly-cross tfoot td {
+  background: var(--surface-2);
+  font-weight: 700;
+  border-top: 2px solid var(--border);
+}
+
+/* ============ 總覽：各帳戶分析建議 ============ */
+.ov-analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 16px;
+}
+.acc-analysis-card {
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+}
+.acc-analysis-card h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.acc-analysis-card .acc-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.acc-analysis-card .indicators {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  margin-bottom: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.acc-analysis-card .ind {
+  background: var(--surface-2);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.acc-analysis-card .ind .lbl {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.acc-analysis-card .ind .val {
+  font-weight: 600;
+  font-size: 13px;
+}
+.acc-analysis-card .ind .val.pos { color: var(--success); }
+.acc-analysis-card .ind .val.neg { color: var(--danger); }
+.acc-analysis-card .insight-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.acc-analysis-card .insight-list li {
+  padding: 6px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  border-bottom: 1px dashed var(--border-light);
+}
+.acc-analysis-card .insight-list li:last-child { border-bottom: none; }
+.acc-analysis-card .insight-list li.warn { color: var(--warning); }
+.acc-analysis-card .insight-list li.bad { color: var(--danger); }
+.acc-analysis-card .insight-list li.good { color: var(--success); }
+.acc-analysis-card .insight-list li::before {
+  display: inline-block;
+  margin-right: 6px;
+  width: 14px;
+}
+.acc-analysis-card .insight-list li.info::before { content: '💡'; }
+.acc-analysis-card .insight-list li.warn::before { content: '⚠️'; }
+.acc-analysis-card .insight-list li.bad::before { content: '🔻'; }
+.acc-analysis-card .insight-list li.good::before { content: '✅'; }
 
 /* ============ 調整金額按鈕 ============ */
 .adjust-btn {

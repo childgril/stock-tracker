@@ -73,8 +73,8 @@
   </div>
 
   <h3>各帳戶明細表</h3>
-  <div class="table-scroll" style="max-height:400px">
-    <table class="data-table" id="ovAccountTable">
+  <div class="ov-account-table-wrap">
+    <table class="data-table compact ov-account-table" id="ovAccountTable">
       <thead><tr>
         <th>帳戶</th><th>市值</th><th>成本</th><th>未實現損益</th>
         <th>已實現損益</th><th>融資利息</th><th>融券手續費</th>
@@ -83,8 +83,32 @@
     </table>
   </div>
 
-  <h3>未實現損益快照趨勢</h3>
-  <div class="chart-box big"><canvas id="chartTrend"></canvas></div>
+  <h3 style="margin-top:30px">每月損益（跨帳戶比較）</h3>
+  <p class="hint">日期豎排（最新在上），各帳戶橫排對齊比較。預設顯示「實際損益」，可切換金類</p>
+  <div class="table-toolbar">
+    <select id="ovMonthlyMetric">
+      <option value="actual">實際損益（推薦）</option>
+      <option value="realizedPL">已實現損益</option>
+      <option value="interest">融資利息</option>
+      <option value="shortFee">融券手續費</option>
+      <option value="dividendCash">現金股利</option>
+      <option value="dayTradePL">當沖損益</option>
+      <option value="tradeAmount">總成交金額</option>
+    </select>
+    <select id="ovMonthlyYear">
+      <option value="">所有年份</option>
+    </select>
+  </div>
+  <div class="ov-monthly-cross-wrap">
+    <table class="data-table compact ov-monthly-cross" id="ovMonthlyCrossTable">
+      <thead></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:30px">📊 各帳戶分析建議</h3>
+  <p class="hint">系統根據資料自動產生的觀察重點、表現指標與提醒</p>
+  <div id="ovAccountAnalysis"></div>
 </section>
 
 <!-- =================== 帳戶明細 =================== -->
@@ -93,20 +117,31 @@
     <h2 id="accountTitle">帳戶明細</h2>
     <div class="period-info" id="period-account"></div>
   </div>
-  <div class="summary-grid">
-    <div class="card"><div class="label">市值</div><div class="value" id="acMarket">—</div></div>
-    <div class="card"><div class="label">成本</div><div class="value" id="acCost">—</div></div>
-    <div class="card"><div class="label">未實現損益</div><div class="value" id="acUnrealizedPL">—</div></div>
-    <div class="card"><div class="label">已實現損益</div><div class="value" id="acRealizedPL">—</div></div>
-    <div class="card"><div class="label">融資利息合計</div><div class="value" id="acInterest">—</div></div>
-    <div class="card"><div class="label">融券手續費合計</div><div class="value" id="acShortFee">—</div></div>
-    <div class="card"><div class="label">借款利息累計</div><div class="value" id="acLoanInterest">—</div></div>
-    <div class="card"><div class="label">借款餘額</div><div class="value" id="acLoanBalance">—</div></div>
-    <div class="card"><div class="label">未領回回補金額</div><div class="value" id="acMarginCallRemaining">—</div></div>
-    <div class="card"><div class="label">累計現金股利</div><div class="value pos" id="acDividendCash">—</div></div>
+  <div class="card-group">
+    <div class="card-group-title">📊 持倉與損益</div>
+    <div class="summary-grid">
+      <div class="card"><div class="label">市值</div><div class="value" id="acMarket">—</div></div>
+      <div class="card"><div class="label">成本</div><div class="value" id="acCost">—</div></div>
+      <div class="card"><div class="label">未實現損益</div><div class="value" id="acUnrealizedPL">—</div></div>
+      <div class="card"><div class="label">已實現損益</div><div class="value" id="acRealizedPL">—</div></div>
+    </div>
+  </div>
+
+  <div class="card-group">
+    <div class="card-group-title">💼 成本與借款</div>
+    <div class="summary-grid">
+      <div class="card"><div class="label">融資利息合計</div><div class="value" id="acInterest">—</div></div>
+      <div class="card"><div class="label">融券手續費合計</div><div class="value" id="acShortFee">—</div></div>
+      <div class="card"><div class="label">借款利息累計</div><div class="value" id="acLoanInterest">—</div></div>
+      <div class="card"><div class="label">借款餘額</div><div class="value" id="acLoanBalance">—</div></div>
+      <div class="card"><div class="label">未領回回補金額</div><div class="value" id="acMarginCallRemaining">—</div></div>
+      <div class="card"><div class="label">累計現金股利</div><div class="value pos" id="acDividendCash">—</div></div>
+    </div>
   </div>
 
   <div id="acDataStatus"></div>
+
+  <div class="scroll-area">
 
   <h3>📊 月份比較分析</h3>
   <p class="hint">三種模式：年度跨月（同月份不同年）、連續月（每月跟前月比）、自選兩個月份比較</p>
@@ -224,6 +259,8 @@
       <tbody></tbody>
     </table>
   </div>
+
+  </div><!-- /.scroll-area -->
 </section>
 
 <!-- =================== 已實現損益 =================== -->
@@ -245,6 +282,7 @@
     <button class="btn-mini" id="btnExportRealized">📊 匯出 Excel</button>
   </div>
 
+  <div class="scroll-area">
   <!-- 配對提醒區（未配對才顯示） -->
   <div id="matchAlerts"></div>
 
@@ -266,6 +304,7 @@
       <tbody></tbody>
     </table>
   </div>
+  </div><!-- /.scroll-area -->
 </section>
 
 <!-- =================== 未實現損益 =================== -->
@@ -288,6 +327,8 @@
     <div class="card"><div class="label">未實現損益</div><div class="value" id="urPL">—</div></div>
     <div class="card"><div class="label">總報酬率</div><div class="value" id="urRate">—</div></div>
   </div>
+
+  <div class="scroll-area">
   <div class="table-scroll">
     <table class="data-table" id="unrealizedTable">
       <thead><tr>
@@ -311,6 +352,7 @@
       <tbody></tbody>
     </table>
   </div>
+  </div><!-- /.scroll-area -->
 </section>
 
 <!-- =================== 投資明細 =================== -->
@@ -336,6 +378,7 @@
     </select>
     <button class="btn-mini primary" id="btnConvertToCash">🔄 新增資轉現</button>
   </div>
+  <div class="scroll-area">
   <div class="table-scroll wide">
     <table class="data-table" id="tradesTable">
       <thead><tr>
@@ -351,6 +394,7 @@
       <tbody></tbody>
     </table>
   </div>
+  </div><!-- /.scroll-area -->
 </section>
 
 <!-- =================== 股票借款 =================== -->
@@ -374,7 +418,9 @@
     <button class="btn-mini primary" id="btnAddLoan">＋ 新增借款</button>
   </div>
 
+  <div class="scroll-area">
   <div id="loanList"></div>
+  </div><!-- /.scroll-area -->
 </section>
 
 <!-- =================== 融資回補 =================== -->
@@ -396,7 +442,9 @@
     <button class="btn-mini primary" id="btnAddMarginCall">＋ 新增回補</button>
   </div>
 
+  <div class="scroll-area">
   <div id="marginCallList"></div>
+  </div><!-- /.scroll-area -->
 </section>
 
 <!-- =================== 股利紀錄 =================== -->
@@ -428,7 +476,9 @@
     </select>
   </div>
 
+  <div class="scroll-area">
   <div id="dividendList"></div>
+  </div><!-- /.scroll-area -->
 </section>
 
 <section id="tab-import" class="tab-content">
@@ -438,6 +488,7 @@
   </div>
   <p class="hint">目前作用中帳戶：<strong id="currentAccountName">—</strong></p>
 
+  <div class="scroll-area">
   <div class="import-grid">
     <div class="import-card">
       <h3>📦 未實現損益</h3>
@@ -497,6 +548,7 @@
 
   <h3 style="margin-top:30px">⚠️ 危險操作</h3>
   <button class="btn-mini danger" id="btnClearAccount">清空目前帳戶所有資料</button>
+  </div><!-- /.scroll-area -->
 </section>
 
 </main>
