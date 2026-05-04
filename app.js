@@ -607,7 +607,7 @@ function renderAll() {
 
 // ---------- 交易期間（每頁右上角）----------
 function getDateRange(accounts) {
-  // 從一個或多個帳戶的所有資料中找出最早與最晚日期
+  // 以「投資明細」的成交日為主，找出最早與最晚日期
   let min = null, max = null;
   const consider = (d) => {
     if (!d) return;
@@ -621,12 +621,6 @@ function getDateRange(accounts) {
   for (const acc of accounts) {
     if (!acc) continue;
     for (const t of (acc.trades || [])) consider(t.date);
-    for (const r of (acc.realized || [])) {
-      consider(r.sellDate);
-      consider(r.buyDate);
-    }
-    for (const s of (acc.snapshots || [])) consider(s.date);
-    if (acc.unrealizedSnapshotDate) consider(acc.unrealizedSnapshotDate);
   }
   return { min, max };
 }
@@ -849,7 +843,12 @@ function renderOverview() {
 
   // 圖
   drawAccountCharts(perAccount);
-  drawTrendChart();
+
+  // 跨帳戶每月損益表
+  renderOvMonthlyCross();
+
+  // 各帳戶分析建議
+  renderOvAccountAnalysis();
 }
 
 function drawAccountCharts(perAccount) {
@@ -905,44 +904,282 @@ function drawAccountCharts(perAccount) {
   });
 }
 
-function drawTrendChart() {
-  if (State.charts.trend) State.charts.trend.destroy();
-  // 取所有帳戶所有快照，依日期合併
-  const dateMap = new Map(); // date -> { market, cost, pl }
-  for (const acc of State.data.accounts) {
-    for (const s of (acc.snapshots || [])) {
-      const cur = dateMap.get(s.date) || { market:0, cost:0, pl:0 };
-      cur.market += s.totalMarket;
-      cur.cost += s.totalCost;
-      cur.pl += s.totalPL;
-      dateMap.set(s.date, cur);
-    }
+// ============================================================
+// 跨帳戶每月損益（總覽用）
+// ============================================================
+function renderOvMonthlyCross() {
+  const accounts = State.data.accounts || [];
+  const table = document.getElementById('ovMonthlyCrossTable');
+  if (!table) return;
+
+  if (!accounts.length) {
+    table.querySelector('thead').innerHTML = '';
+    table.querySelector('tbody').innerHTML = '<tr><td class="empty-state">尚無帳戶</td></tr>';
+    return;
   }
-  const dates = [...dateMap.keys()].sort();
-  if (!dates.length) return;
-  const ctx = document.getElementById('chartTrend').getContext('2d');
-  State.charts.trend = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: dates,
-      datasets: [
-        { label: '市值', data: dates.map(d => dateMap.get(d).market), borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.1)', fill: true, tension: 0.3 },
-        { label: '成本', data: dates.map(d => dateMap.get(d).cost), borderColor: '#9ca3af', borderDash: [5,5], fill: false, tension: 0.3 },
-        { label: '未實現損益', data: dates.map(d => dateMap.get(d).pl), borderColor: '#059669', fill: false, tension: 0.3 }
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#1f2937' } } },
-      scales: {
-        x: { ticks: { color: '#6b7280' }, grid: { color: '#e8edf3' } },
-        y: { ticks: { color: '#6b7280' }, grid: { color: '#e8edf3' } }
-      }
+
+  const metric = document.getElementById('ovMonthlyMetric')?.value || 'actual';
+  const yearFilter = document.getElementById('ovMonthlyYear')?.value || '';
+
+  // 收集所有月份
+  const allMonths = new Set();
+  const accMonthData = []; // [{ acc, byMonth: Map }]
+  for (const acc of accounts) {
+    const months = buildMonthlyDataWithDayTrade(acc);
+    const byMonth = new Map();
+    for (const m of months) {
+      allMonths.add(m.key);
+      byMonth.set(m.key, m);
     }
-  });
+    accMonthData.push({ acc, byMonth });
+  }
+
+  // 補年份下拉
+  const yearSel = document.getElementById('ovMonthlyYear');
+  if (yearSel) {
+    const years = [...new Set([...allMonths].map(k => k.split('-')[0]))].sort().reverse();
+    const cur = yearSel.value;
+    yearSel.innerHTML = '<option value="">所有年份</option>' +
+      years.map(y => `<option value="${y}" ${y === cur ? 'selected' : ''}>${y} 年</option>`).join('');
+  }
+
+  // 篩選月份（最新在上）
+  let monthsSorted = [...allMonths].sort((a, b) => b.localeCompare(a));
+  if (yearFilter) monthsSorted = monthsSorted.filter(k => k.startsWith(yearFilter + '-'));
+
+  if (!monthsSorted.length) {
+    table.querySelector('thead').innerHTML = '';
+    table.querySelector('tbody').innerHTML = '<tr><td class="empty-state">尚無資料</td></tr>';
+    return;
+  }
+
+  // 表頭：月份 + 各帳戶 + 合計
+  const thead = ['<tr>', '<th>月份</th>'];
+  for (const a of accounts) {
+    thead.push(`<th>${a.name || '未命名'}</th>`);
+  }
+  thead.push('<th>合計</th>', '</tr>');
+  table.querySelector('thead').innerHTML = thead.join('');
+
+  // 表身：每月一列
+  const rows = [];
+  const colTotals = new Array(accounts.length).fill(0); // 各帳戶總計
+  let grandTotal = 0;
+
+  for (const monthKey of monthsSorted) {
+    const cells = [`<tr>`, `<td>${fmtMonthLabel(monthKey)}</td>`];
+    let rowSum = 0;
+    accMonthData.forEach((data, i) => {
+      const m = data.byMonth.get(monthKey);
+      const v = m ? (m[metric] || 0) : 0;
+      colTotals[i] += v;
+      rowSum += v;
+      const cls = v > 0 ? 'pos' : (v < 0 ? 'neg' : '');
+      cells.push(`<td class="${cls}">${v ? fmt(v, { sign: true }) : '—'}</td>`);
+    });
+    grandTotal += rowSum;
+    const sumCls = rowSum > 0 ? 'pos' : (rowSum < 0 ? 'neg' : '');
+    cells.push(`<td class="${sumCls}"><strong>${rowSum ? fmt(rowSum, { sign: true }) : '—'}</strong></td>`);
+    cells.push('</tr>');
+    rows.push(cells.join(''));
+  }
+
+  // 加 tfoot 顯示各帳戶合計
+  let tfoot = '<tfoot><tr><td>合計</td>';
+  for (const t of colTotals) {
+    const cls = t > 0 ? 'pos' : (t < 0 ? 'neg' : '');
+    tfoot += `<td class="${cls}">${fmt(t, { sign: true })}</td>`;
+  }
+  const grandCls = grandTotal > 0 ? 'pos' : (grandTotal < 0 ? 'neg' : '');
+  tfoot += `<td class="${grandCls}"><strong>${fmt(grandTotal, { sign: true })}</strong></td></tr></tfoot>`;
+
+  table.querySelector('tbody').innerHTML = rows.join('') + tfoot;
 }
 
-// ---------- 帳戶頁 ----------
+// ============================================================
+// 各帳戶分析建議（總覽用）
+// ============================================================
+function renderOvAccountAnalysis() {
+  const wrap = document.getElementById('ovAccountAnalysis');
+  if (!wrap) return;
+  const accounts = State.data.accounts || [];
+  if (!accounts.length) {
+    wrap.innerHTML = '<div class="empty-state">尚無帳戶</div>';
+    return;
+  }
+
+  const cards = accounts.map(acc => buildAccountAnalysisCard(acc));
+  wrap.innerHTML = `<div class="ov-analysis-grid">${cards.join('')}</div>`;
+}
+
+function buildAccountAnalysisCard(acc) {
+  const g = aggregateAccount(acc);
+  const months = buildMonthlyDataWithDayTrade(acc);
+  const realizedItems = acc.realized || [];
+  const trades = acc.trades || [];
+
+  // === 統計指標 ===
+  // 報酬率（基於買進總額）
+  const totalBuyAmount = trades
+    .filter(t => t.action === '買')
+    .reduce((s, t) => s + (t.amount || 0), 0);
+  const returnRate = totalBuyAmount > 0
+    ? (g.realizedPL / totalBuyAmount) * 100
+    : null;
+
+  // 已實現勝率
+  const winCount = realizedItems.filter(r => actualPL(r) > 0).length;
+  const lossCount = realizedItems.filter(r => actualPL(r) < 0).length;
+  const totalRealized = winCount + lossCount;
+  const winRate = totalRealized > 0 ? (winCount / totalRealized) * 100 : null;
+
+  // 最近 3 個月實際損益走勢
+  const recent3 = months.slice(0, 3); // 最新在前
+  const recent3Sum = recent3.reduce((s, m) => s + (m.actual || 0), 0);
+
+  // 主力股票（已實現損益最大的）
+  const stockPL = new Map();
+  for (const r of realizedItems) {
+    const k = r.code;
+    if (!k) continue;
+    stockPL.set(k, (stockPL.get(k) || 0) + actualPL(r));
+  }
+  const sortedStocks = [...stockPL.entries()].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const topGain = sortedStocks.find(([_, v]) => v > 0);
+  const topLoss = sortedStocks.find(([_, v]) => v < 0);
+
+  // 當沖統計
+  const dayTrades = analyzeDayTrades(acc);
+  const dtCount = dayTrades.reduce((s, d) => s + d.count, 0);
+  const dtPL = dayTrades.reduce((s, d) => s + d.netPL, 0);
+
+  // === 觀察與建議 ===
+  const insights = [];
+
+  // 1. 表現是好還是差
+  if (g.realizedPL > 0) {
+    insights.push({ kind: 'good', text: `已實現損益 <strong>${fmt(g.realizedPL, { sign: true })}</strong>${returnRate !== null ? `（報酬率 ${returnRate.toFixed(1)}%）` : ''}` });
+  } else if (g.realizedPL < 0) {
+    insights.push({ kind: 'bad', text: `已實現損益 <strong>${fmt(g.realizedPL, { sign: true })}</strong>${returnRate !== null ? `（報酬率 ${returnRate.toFixed(1)}%）` : ''}` });
+  }
+
+  // 2. 勝率
+  if (winRate !== null) {
+    if (winRate >= 60) {
+      insights.push({ kind: 'good', text: `勝率 ${winRate.toFixed(1)}%（${winCount} 勝 / ${lossCount} 敗），表現穩定` });
+    } else if (winRate < 40) {
+      insights.push({ kind: 'warn', text: `勝率僅 ${winRate.toFixed(1)}%（${winCount} 勝 / ${lossCount} 敗），可檢視選股邏輯` });
+    } else {
+      insights.push({ kind: 'info', text: `勝率 ${winRate.toFixed(1)}%（${winCount} 勝 / ${lossCount} 敗）` });
+    }
+  }
+
+  // 3. 主力股票
+  if (topGain) {
+    insights.push({ kind: 'good', text: `獲利主力：<strong>${topGain[0]}</strong>（${fmt(topGain[1], { sign: true })}）` });
+  }
+  if (topLoss) {
+    insights.push({ kind: 'bad', text: `虧損最多：<strong>${topLoss[0]}</strong>（${fmt(topLoss[1], { sign: true })}）` });
+  }
+
+  // 4. 最近 3 個月趨勢
+  if (recent3.length >= 2) {
+    if (recent3Sum > 0) {
+      insights.push({ kind: 'info', text: `最近 ${recent3.length} 個月實際損益合計 ${fmt(recent3Sum, { sign: true })}，狀態正向` });
+    } else if (recent3Sum < 0) {
+      // 連續負值警示
+      const negCount = recent3.filter(m => (m.actual || 0) < 0).length;
+      if (negCount === recent3.length && recent3.length >= 3) {
+        insights.push({ kind: 'warn', text: `最近 ${recent3.length} 個月連續虧損，建議檢視策略` });
+      } else {
+        insights.push({ kind: 'info', text: `最近 ${recent3.length} 個月實際損益 ${fmt(recent3Sum, { sign: true })}` });
+      }
+    }
+  }
+
+  // 5. 借款利息提醒
+  if (g.loanInterestPaid > 0) {
+    const ratio = totalBuyAmount > 0 ? (g.loanInterestPaid / Math.abs(totalBuyAmount)) * 100 : 0;
+    if (ratio > 1) {
+      insights.push({ kind: 'warn', text: `借款利息累計 ${fmt(g.loanInterestPaid)}（佔交易額 ${ratio.toFixed(2)}%）` });
+    } else if (g.loanInterestPaid > 0) {
+      insights.push({ kind: 'info', text: `借款利息累計 ${fmt(g.loanInterestPaid)}` });
+    }
+  }
+
+  // 6. 未領回回補金額
+  if (g.mcRemaining > 0) {
+    insights.push({ kind: 'warn', text: `融資回補有 <strong>${fmt(g.mcRemaining)}</strong> 尚未領回，記得追蹤` });
+  }
+
+  // 7. 當沖
+  if (dtCount > 0) {
+    const dtRatio = totalRealized > 0 ? (dtCount / totalRealized) * 100 : 0;
+    if (dtPL > 0) {
+      insights.push({ kind: 'info', text: `當沖 ${dtCount} 筆，損益 ${fmt(dtPL, { sign: true })}` });
+    } else if (dtPL < 0 && Math.abs(dtPL) > Math.abs(g.realizedPL) * 0.3) {
+      insights.push({ kind: 'warn', text: `當沖 ${dtCount} 筆共虧損 ${fmt(dtPL)}，影響整體表現` });
+    } else {
+      insights.push({ kind: 'info', text: `當沖 ${dtCount} 筆，損益 ${fmt(dtPL, { sign: true })}` });
+    }
+  }
+
+  // 8. 配對未完成
+  const unmatched = realizedItems.filter(r => r._unmatched).length;
+  if (unmatched > 0) {
+    insights.push({ kind: 'warn', text: `${unmatched} 筆已實現損益未配對到投資明細，利息可能不準` });
+  }
+
+  // 9. 持倉狀況
+  if (g.totalCost > 0) {
+    const unrealizedRate = (g.unrealizedPL / g.totalCost) * 100;
+    if (unrealizedRate < -10) {
+      insights.push({ kind: 'warn', text: `目前持倉浮虧 ${unrealizedRate.toFixed(1)}%，需注意風險` });
+    } else if (unrealizedRate > 10) {
+      insights.push({ kind: 'good', text: `目前持倉浮盈 ${unrealizedRate.toFixed(1)}%` });
+    }
+  }
+
+  // 10. 股利
+  if (g.dividendCash > 0) {
+    insights.push({ kind: 'info', text: `現金股利累計 ${fmt(g.dividendCash)}，已計入實際損益` });
+  }
+
+  // 沒任何洞察 → 補一條
+  if (insights.length === 0) {
+    insights.push({ kind: 'info', text: '尚無足夠資料生成分析，請先匯入相關資料' });
+  }
+
+  // === 主要指標 4 格 ===
+  const indicators = [
+    { lbl: '實際損益', val: fmt(g.realizedPL, { sign: true }), cls: g.realizedPL > 0 ? 'pos' : (g.realizedPL < 0 ? 'neg' : '') },
+    { lbl: '報酬率', val: returnRate !== null ? `${returnRate > 0 ? '+' : ''}${returnRate.toFixed(2)}%` : '—', cls: returnRate > 0 ? 'pos' : (returnRate < 0 ? 'neg' : '') },
+    { lbl: '勝率', val: winRate !== null ? `${winRate.toFixed(1)}%` : '—', cls: winRate >= 50 ? 'pos' : (winRate < 50 ? 'neg' : '') },
+    { lbl: '已實現筆數', val: totalRealized, cls: '' },
+  ];
+
+  return `
+    <div class="acc-analysis-card">
+      <h4>
+        <span>${acc.name || '未命名'}</span>
+        <span class="acc-tag">${acc.broker || ''}</span>
+      </h4>
+      <div class="indicators">
+        ${indicators.map(i => `
+          <div class="ind">
+            <div class="lbl">${i.lbl}</div>
+            <div class="val ${i.cls}">${i.val}</div>
+          </div>
+        `).join('')}
+      </div>
+      <ul class="insight-list">
+        ${insights.map(i => `<li class="${i.kind}">${i.text}</li>`).join('')}
+      </ul>
+    </div>
+  `;
+}
+
+
 function renderAccount() {
   const acc = getCurrentAccount();
   const status = document.getElementById('acDataStatus');
@@ -2196,7 +2433,21 @@ async function fetchTPEXPrices() {
 // 有即時報價，且支援 .TW（上市）/ .TWO（上櫃）
 // 使用代理避開 CORS
 async function fetchYahooSinglePrice(code) {
-  const symbols = [`${code}.TW`, `${code}.TWO`];
+  // 多個代號變體（解決 ETF 前導 0 問題）
+  const codeVariants = new Set();
+  codeVariants.add(code);
+  if (/^\d+$/.test(code)) {
+    codeVariants.add(code.padStart(4, '0'));
+    codeVariants.add(code.padStart(5, '0'));
+    codeVariants.add(code.padStart(6, '0'));
+  }
+
+  const symbols = [];
+  for (const c of codeVariants) {
+    symbols.push(`${c}.TW`);
+    symbols.push(`${c}.TWO`);
+  }
+
   const proxies = [
     (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
     (u) => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u),
@@ -2265,12 +2516,31 @@ async function refreshPrices(silent = false) {
     const tpex = _priceCache.tpexMap;
     const openapiOk = (twse.size + tpex.size) > 0;
 
+    // 嘗試多個代號變體（解決 ETF 代號被 Excel 截掉前導 0 的歷史資料問題）
+    const lookupPrice = (code) => {
+      const variants = new Set();
+      variants.add(code);
+      // 純數字 → 試所有可能的補 0
+      if (/^\d+$/.test(code)) {
+        variants.add(code.padStart(4, '0'));  // 補到 4 位
+        variants.add(code.padStart(5, '0'));  // 補到 5 位（00712、00940 都這格式）
+        variants.add(code.padStart(6, '0'));  // 6 位（極少見）
+        // 也試去掉前導 0（萬一 OpenAPI 那邊也少 0）
+        variants.add(code.replace(/^0+/, '') || '0');
+      }
+      for (const v of variants) {
+        const info = twse.get(v) || tpex.get(v);
+        if (info && info.price > 0) return info;
+      }
+      return null;
+    };
+
     // 第一輪：用 OpenAPI（如果有）填價格
     let updated = 0;
     const failed = [];
     for (const x of acc.unrealized) {
       const code = String(x.code || '').trim();
-      const info = twse.get(code) || tpex.get(code);
+      const info = lookupPrice(code);
       if (info && info.price > 0) {
         x.price = info.price;
         x.marketValue = info.price * (x.qty || 0);
@@ -4706,6 +4976,10 @@ function bindEvents() {
   bindChange('cmpMetric', renderMonthCompare);
   bindChange('cmpMonthA', renderMonthCompare);
   bindChange('cmpMonthB', renderMonthCompare);
+
+  // 總覽：跨帳戶每月損益
+  bindChange('ovMonthlyMetric', renderOvMonthlyCross);
+  bindChange('ovMonthlyYear', renderOvMonthlyCross);
 
   // 個股損益分析
   bindInput('stockSearch', renderStockAnalysis);
