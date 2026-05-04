@@ -23,13 +23,19 @@ const Parsers = (() => {
     return String(v).trim();
   }
 
+  // 股票代號的最終整理（A 方案下，前導 0 已在 sheetToRows 階段保留，這裡只 trim）
+  function normalizeStockCode(code) {
+    if (!code) return '';
+    return String(code).trim();
+  }
+
   // 國泰格式："鴻海(2317)" 或 "00940元大台灣價值高息(00940)" 或 "緯穎-KY(6669)" → {code, name}
   function parseStockName(s) {
     if (s == null) return { code: '', name: '' };
     const str = String(s).trim();
     const m = str.match(/^(.+?)\(([A-Z0-9]+)\)\s*$/);
-    if (m) return { code: m[2], name: m[1].trim() };
-    if (/^\d+$/.test(str)) return { code: str, name: '' };
+    if (m) return { code: normalizeStockCode(m[2]), name: m[1].trim() };
+    if (/^\d+$/.test(str)) return { code: normalizeStockCode(str), name: '' };
     return { code: '', name: str };
   }
 
@@ -68,8 +74,47 @@ const Parsers = (() => {
   }
 
   // 把 SheetJS 讀進來的 worksheet 轉成二維陣列
+  // 特殊處理：當儲存格的 raw value 是純整數，但 Excel 的「顯示文字」
+  // 是「前導 0 + 該整數」（例如 raw=712, 顯示 "00712"），改用顯示字串
+  // 這解決 ETF 代號（00712、0050 等）被 Excel 自動轉成數字後的失真
   function sheetToRows(ws) {
-    return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+    if (!ws || !ws['!ref']) return [];
+    let range;
+    try {
+      range = XLSX.utils.decode_range(ws['!ref']);
+    } catch (e) {
+      // decode_range 失敗就退回單純的 sheet_to_json
+      return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+    }
+    const rows = [];
+    for (let R = range.s.r; R <= range.e.r; R++) {
+      const row = [];
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const addr = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = ws[addr];
+        if (!cell) {
+          row.push(null);
+          continue;
+        }
+        let v = cell.v;
+        // 如果是整數且有自訂格式，用 format_cell 取顯示文字檢查是否有前導 0
+        if (typeof v === 'number' && Number.isInteger(v) && v >= 0) {
+          try {
+            const formatted = XLSX.utils.format_cell(cell);
+            // 如果格式化後是「純數字字串」且長度 > 原數字位數，代表有前導 0
+            // 例如：raw=712, formatted="00712" → 採用 "00712"
+            if (formatted &&
+                /^\d+$/.test(formatted) &&
+                formatted.length > String(v).length) {
+              v = formatted;
+            }
+          } catch (e) { /* format_cell 失敗就用原 raw */ }
+        }
+        row.push(v == null ? null : v);
+      }
+      rows.push(row);
+    }
+    return rows;
   }
 
   // ---------- 自動偵測格式 ----------
@@ -119,7 +164,7 @@ const Parsers = (() => {
       // 跳過合計列
       const firstCell = toString(r[0]);
       if (firstCell.includes('總市值') || firstCell.includes('總成本')) continue;
-      const code = toString(r[1]);
+      const code = normalizeStockCode(toString(r[1]));
       if (!code || !/^\d+$/.test(code)) continue;
 
       items.push({
@@ -153,7 +198,7 @@ const Parsers = (() => {
       const r = rows[i];
       if (!r) continue;
       const date = toString(r[0]);
-      const code = toString(r[1]);
+      const code = normalizeStockCode(toString(r[1]));
       if (!date || !code) continue;
       if (!/^\d+$/.test(code)) continue;
 
@@ -195,7 +240,7 @@ const Parsers = (() => {
     for (let i = 1; i < rows.length; i++) {
       const r = rows[i];
       if (!r) continue;
-      const code = toString(r[0]);
+      const code = normalizeStockCode(toString(r[0]));
       if (!code) continue;
       if (!/^\d+$/.test(code)) continue;
 
@@ -383,7 +428,7 @@ const Parsers = (() => {
       const r = rows[i];
       if (!r) continue;
       const name = toString(r[0]);
-      const code = toString(r[1]);
+      const code = normalizeStockCode(toString(r[1]));
       if (!name && !code) continue;
       if (!code || (typeof r[1] !== 'number' && !/^[A-Z0-9]+$/.test(code))) continue;
 
@@ -438,7 +483,7 @@ const Parsers = (() => {
       if (typeof dateRaw === 'string' && !/^\d{2,4}[/-]\d{1,2}[/-]\d{1,2}/.test(dateRaw.trim())) continue;
       if (!(dateRaw instanceof Date) && typeof dateRaw !== 'string') continue;
 
-      const code = toString(r[2]);
+      const code = normalizeStockCode(toString(r[2]));
       if (!code) continue;
       const cat = toString(r[5]); // '現買' '現賣' '資買' '資賣' '券賣' '券買'
 
@@ -516,7 +561,7 @@ const Parsers = (() => {
       if (typeof dateRaw === 'string' && !/^\d{2,4}[/-]\d{1,2}[/-]\d{1,2}/.test(dateRaw.trim())) continue;
       if (!(dateRaw instanceof Date) && typeof dateRaw !== 'string') continue;
 
-      const code = toString(r[2]);
+      const code = normalizeStockCode(toString(r[2]));
       if (!code) continue;
       const cat = toString(r[3]);
 
@@ -846,7 +891,7 @@ const Parsers = (() => {
           continue;
         }
         // 資料列：代號必須是英數字組合
-        const code = cells[0];
+        const code = normalizeStockCode(cells[0]);
         if (!code || !/^[A-Z0-9]+$/i.test(code)) continue;
         const name = cells[1] || '';
         const cash = toNumber(cells[2]);
@@ -893,7 +938,7 @@ const Parsers = (() => {
     const items = [];
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i] || [];
-      const code = toString(r[0]);
+      const code = normalizeStockCode(toString(r[0]));
       const name = toString(r[1]);
       // 跳過表頭
       if (!code || code === '代號' || !/^[A-Z0-9]+$/i.test(code)) continue;
