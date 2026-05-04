@@ -78,30 +78,39 @@ const Parsers = (() => {
   // 是「前導 0 + 該整數」（例如 raw=712, 顯示 "00712"），改用顯示字串
   // 這解決 ETF 代號（00712、0050 等）被 Excel 自動轉成數字後的失真
   function sheetToRows(ws) {
-    if (!ws || !ws['!ref']) return [];
+    if (!ws) return [];
+    // 如果必要的 SheetJS API 缺失，直接退回簡單模式
+    if (!XLSX.utils.decode_range || !XLSX.utils.encode_cell) {
+      return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+    }
+    if (!ws['!ref']) {
+      return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+    }
     let range;
     try {
       range = XLSX.utils.decode_range(ws['!ref']);
     } catch (e) {
-      // decode_range 失敗就退回單純的 sheet_to_json
       return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
     }
     const rows = [];
+    const hasFormatCell = typeof XLSX.utils.format_cell === 'function';
     for (let R = range.s.r; R <= range.e.r; R++) {
       const row = [];
       for (let C = range.s.c; C <= range.e.c; C++) {
-        const addr = XLSX.utils.encode_cell({ r: R, c: C });
-        const cell = ws[addr];
+        let cell = null;
+        try {
+          const addr = XLSX.utils.encode_cell({ r: R, c: C });
+          cell = ws[addr];
+        } catch (e) { /* skip */ }
         if (!cell) {
           row.push(null);
           continue;
         }
         let v = cell.v;
-        // 如果是整數且有自訂格式，用 format_cell 取顯示文字檢查是否有前導 0
-        if (typeof v === 'number' && Number.isInteger(v) && v >= 0) {
+        // 如果是整數且 SheetJS 有 format_cell，用顯示文字檢查是否有前導 0
+        if (hasFormatCell && typeof v === 'number' && Number.isInteger(v) && v >= 0) {
           try {
             const formatted = XLSX.utils.format_cell(cell);
-            // 如果格式化後是「純數字字串」且長度 > 原數字位數，代表有前導 0
             // 例如：raw=712, formatted="00712" → 採用 "00712"
             if (formatted &&
                 /^\d+$/.test(formatted) &&

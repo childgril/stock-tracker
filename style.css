@@ -444,19 +444,17 @@ button {
 .data-table td.pos { color: var(--success); font-weight: 500; }
 .data-table td.neg { color: var(--danger); font-weight: 500; }
 
-/* 表格容器：保留外觀，但不再是滾動容器（讓 thead sticky 錨定到外層 main）。
-   結果：整個頁面只有 main 一個滾輪，滾動時表頭會黏在 main 視窗頂端。 */
+/* 滾動容器：表頭 sticky 的關鍵是這個容器要有明確 max-height + overflow:auto，
+   且使用者必須在這個容器「內部」捲動 */
 .table-scroll {
+  max-height: calc(100vh - 200px);
+  min-height: 200px;
+  overflow: auto;
   border: 1px solid var(--border-light);
   border-radius: 10px;
   background: var(--surface);
   box-shadow: var(--shadow-sm);
-  /* 不能設 overflow（任何方向），否則 sticky 會錨定到這層而非 main */
-}
-/* 寬表變體：允許橫向捲動（投資明細等很寬的表）。
-   缺點：會犧牲表頭 sticky（sticky 會錨在這層而非 main） */
-.table-scroll.wide {
-  overflow-x: auto;
+  overscroll-behavior: contain;
 }
 
 /* 沒有 .table-scroll 包覆的表格（總覽小表）也要有外觀 */
