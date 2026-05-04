@@ -229,7 +229,21 @@ const Parsers = (() => {
   // ============================================================
   function parseUnrealizedCathay(rows) {
     const items = [];
-    for (let i = 2; i < rows.length; i++) {
+    // 動態找表頭列：找含有「股票名稱」或「庫存股數」的那一列
+    let headerRow = -1;
+    for (let i = 0; i < Math.min(rows.length, 5); i++) {
+      const r = rows[i];
+      if (!r) continue;
+      const text = r.map(x => x == null ? '' : String(x)).join('|');
+      if (/股票名稱/.test(text) && /(庫存股數|現價|股票現值)/.test(text)) {
+        headerRow = i;
+        break;
+      }
+    }
+    // 找不到表頭就退回原本的 i=2
+    const startRow = headerRow >= 0 ? headerRow + 1 : 2;
+
+    for (let i = startRow; i < rows.length; i++) {
       const r = rows[i];
       if (!r) continue;
       const stockField = r[0];
