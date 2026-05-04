@@ -186,34 +186,18 @@ html, body { height: 100vh; overflow: hidden; }
 
 main {
   flex: 1;
-  padding: 24px 28px 0;  /* 底部 padding 移除，避免雙重 */
+  padding: 24px 28px;
   min-width: 0;
   height: 100vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;  /* main 自己不滾動，由 tab-content 內部處理 */
+  overflow-y: auto;
 }
 
 .tab-content { display: none; }
-.tab-content.active {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;  /* flex 子元素允許收縮 */
-  padding-bottom: 24px;  /* 補 main 拿掉的 padding */
-}
+.tab-content.active { display: block; }
 
-/* 總覽頁不適用「頂部固定」，整頁可滾 */
-#tab-overview.active {
-  overflow-y: auto;
-}
-
-/* 其他頁面：頂部內容自然高度，最後一個區塊（表格）佔滿剩餘空間並內部滾動 */
-.tab-content.active:not(#tab-overview) > .scroll-area {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
+/* .scroll-area 不再強制 flex/overflow（之前的層級導致內容空白）。
+   保留這個 class 只為向後相容；實際捲動由 main 處理 */
+.scroll-area { display: block; }
 
 /* 頁面標題列：左側 H2，右側資訊（如交易期間） */
 .page-header {
