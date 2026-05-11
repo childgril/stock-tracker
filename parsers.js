@@ -174,7 +174,7 @@ const Parsers = (() => {
       const firstCell = toString(r[0]);
       if (firstCell.includes('總市值') || firstCell.includes('總成本')) continue;
       const code = normalizeStockCode(toString(r[1]));
-      if (!code || !/^\d+$/.test(code)) continue;
+      if (!code || !/^[A-Z0-9]+$/i.test(code)) continue;
 
       items.push({
         code,
@@ -209,7 +209,7 @@ const Parsers = (() => {
       const date = toString(r[0]);
       const code = normalizeStockCode(toString(r[1]));
       if (!date || !code) continue;
-      if (!/^\d+$/.test(code)) continue;
+      if (!/^[A-Z0-9]+$/i.test(code)) continue;
 
       items.push({
         date: formatDate(r[0]),
@@ -251,7 +251,7 @@ const Parsers = (() => {
       if (!r) continue;
       const code = normalizeStockCode(toString(r[0]));
       if (!code) continue;
-      if (!/^\d+$/.test(code)) continue;
+      if (!/^[A-Z0-9]+$/i.test(code)) continue;
 
       items.push({
         code,
