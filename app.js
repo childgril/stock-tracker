@@ -2620,6 +2620,80 @@ async function refreshPrices(silent = false) {
 }
 
 
+// ============================================================
+// 編輯 / 刪除未實現損益
+// ============================================================
+async function editUnrealizedDialog(item) {
+  const result = await showModal({
+    title: `編輯未實現 - ${item.code} ${item.name||''}`,
+    html: `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;min-width:520px">
+        <label>代號<input type="text" id="ur-code" value="${item.code||''}"></label>
+        <label>名稱<input type="text" id="ur-name" value="${(item.name||'').replace(/"/g,'&quot;')}"></label>
+        <label>類別
+          <select id="ur-cat">
+            <option value="現股" ${item.category==='現股'?'selected':''}>現股</option>
+            <option value="融資" ${item.category==='融資'?'selected':''}>融資</option>
+            <option value="融券" ${item.category==='融券'?'selected':''}>融券</option>
+          </select>
+        </label>
+        <label>數量<input type="number" id="ur-qty" value="${item.qty||0}"></label>
+        <label>現價<input type="number" id="ur-price" value="${item.price||0}" step="0.01"></label>
+        <label>市值<input type="number" id="ur-market" value="${item.marketValue||0}"></label>
+        <label>成本金額<input type="number" id="ur-cost" value="${item.cost||0}"></label>
+        <label>平均單價<input type="number" id="ur-avg" value="${item.avgCost||0}" step="0.0001"></label>
+        <label>手續費<input type="number" id="ur-fee" value="${item.fee||0}"></label>
+        <label>交易稅<input type="number" id="ur-tax" value="${item.tax||0}"></label>
+        <label>利息<input type="number" id="ur-interest" value="${item.interest||0}"></label>
+        <label>損益<input type="number" id="ur-pl" value="${item.pl||0}"></label>
+      </div>
+    `,
+    confirmText: '儲存',
+    onConfirm: (body) => ({
+      code: body.querySelector('#ur-code').value.trim(),
+      name: body.querySelector('#ur-name').value.trim(),
+      category: body.querySelector('#ur-cat').value,
+      qty: parseFloat(body.querySelector('#ur-qty').value) || 0,
+      price: parseFloat(body.querySelector('#ur-price').value) || 0,
+      marketValue: parseFloat(body.querySelector('#ur-market').value) || 0,
+      cost: parseFloat(body.querySelector('#ur-cost').value) || 0,
+      avgCost: parseFloat(body.querySelector('#ur-avg').value) || 0,
+      fee: parseFloat(body.querySelector('#ur-fee').value) || 0,
+      tax: parseFloat(body.querySelector('#ur-tax').value) || 0,
+      interest: parseFloat(body.querySelector('#ur-interest').value) || 0,
+      pl: parseFloat(body.querySelector('#ur-pl').value) || 0,
+    })
+  });
+  if (!result) return;
+  Object.assign(item, result);
+  // 重算報酬率
+  if (item.cost > 0) {
+    const r = (item.pl / item.cost) * 100;
+    item.rate = (r > 0 ? '+' : '') + r.toFixed(2) + '%';
+  } else {
+    item.rate = '—';
+  }
+  save();
+  renderAll();
+  toast('已更新', 'ok');
+}
+
+async function deleteUnrealizedConfirm(item) {
+  const acc = getCurrentAccount();
+  if (!acc) return;
+  const ok = await confirmDialog(
+    '刪除未實現損益',
+    `確定刪除這筆持股紀錄？<br><br><b>${item.code} ${item.name||''}</b><br>${item.category} ${fmt(item.qty)} 股，市值 ${fmt(item.marketValue)}<br><br>注意：下次重新匯入「未實現損益.xlsx」會把整張表覆蓋，你刪掉的會被還原。<br>建議：如果這筆已不該存在（例如賣光了），請先檢查券商對帳單。`
+  );
+  if (!ok) return;
+  const idx = acc.unrealized.indexOf(item);
+  if (idx < 0) return;
+  acc.unrealized.splice(idx, 1);
+  save();
+  renderAll();
+  toast('已刪除', 'ok');
+}
+
 // ---------- 未實現損益 ----------
 function renderUnrealized() {
   const acc = getCurrentAccount();
@@ -2627,7 +2701,7 @@ function renderUnrealized() {
   const info = document.getElementById('unrealizedSnapshotInfo');
   const snapBody = document.querySelector('#snapshotTable tbody');
   if (!acc || !acc.unrealized.length) {
-    tb.innerHTML = '<tr><td colspan="13" class="empty-state">尚無未實現損益資料</td></tr>';
+    tb.innerHTML = '<tr><td colspan="14" class="empty-state">尚無未實現損益資料</td></tr>';
     info.textContent = '';
     setVal('urMarket','—'); setVal('urCost','—'); setVal('urPL','—'); setVal('urRate','—');
     snapBody.innerHTML = '<tr><td colspan="5" class="empty-state">無快照</td></tr>';
@@ -2644,11 +2718,11 @@ function renderUnrealized() {
 
   info.textContent = `快照日：${acc.unrealizedSnapshotDate || '—'}　共 ${acc.unrealized.length} 檔`;
 
-  tb.innerHTML = acc.unrealized.map(x => {
+  tb.innerHTML = acc.unrealized.map((x, idx) => {
     const priceClass = x._priceUpdated ? 'price-updated-cell' : '';
     const failedTag = (x._priceUpdated === false) ? '<span class="price-failed-tag" title="無法從 Yahoo 取得即時價">未取得</span>' : '';
     return `
-    <tr>
+    <tr data-idx="${idx}">
       <td>${x.code}</td>
       <td>${x.name}${failedTag}</td>
       <td>${x.category}</td>
@@ -2662,8 +2736,25 @@ function renderUnrealized() {
       <td>${fmt(x.interest)}</td>
       <td class="${plClass(x.pl)} ${priceClass}">${fmt(x.pl, {sign:true})}</td>
       <td class="${plClass(x.pl)} ${priceClass}">${x.rate || (x.cost ? fmtPct(x.pl/x.cost*100) : '—')}</td>
+      <td>
+        <button class="btn-mini" data-act="edit-ur" data-idx="${idx}" style="padding:2px 6px;font-size:11px" title="編輯">✏️</button>
+        <button class="btn-mini danger" data-act="del-ur" data-idx="${idx}" style="padding:2px 6px;font-size:11px" title="刪除">🗑️</button>
+      </td>
     </tr>
   `;}).join('');
+
+  // 綁定編輯/刪除
+  tb.querySelectorAll('button[data-act]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.idx, 10);
+      const x = acc.unrealized[idx];
+      if (!x) return;
+      const act = btn.dataset.act;
+      if (act === 'edit-ur') await editUnrealizedDialog(x);
+      else if (act === 'del-ur') await deleteUnrealizedConfirm(x);
+    };
+  });
 
   // 快照表
   snapBody.innerHTML = (acc.snapshots || []).slice().reverse().map(s => `
