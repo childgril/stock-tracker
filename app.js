@@ -56,6 +56,10 @@ function load() {
             acc.dividends = { entries: [] };
           }
           if (!Array.isArray(acc.dividends.entries)) acc.dividends.entries = [];
+          // 未實現損益：用「平均單價×數量」重算損益與報酬率（舊資料相容）
+          if (Array.isArray(acc.unrealized)) {
+            for (const x of acc.unrealized) recalcUnrealizedItem(x);
+          }
           // 舊版本的「累計模式」(aggregates) → 轉成沒日期的逐筆紀錄
           if (Array.isArray(acc.dividends.aggregates) && acc.dividends.aggregates.length > 0) {
             for (const a of acc.dividends.aggregates) {
@@ -83,6 +87,138 @@ function save() {
   } catch (e) {
     toast('儲存失敗：' + e.message, 'err');
   }
+}
+
+// ---------- 未實現損益：用「平均單價×數量」當股票全額成本重算損益與報酬率 ----------
+// 融資的「成本金額」其實是自備款（保證金），不能拿來算損益，
+// 所以一律用 平均單價×數量 當真正的股票成本。
+function recalcUnrealizedItem(x) {
+  if (!x) return;
+  const qty = x.qty || 0;
+  const avg = x.avgCost || 0;
+  // 股票全額成本（若沒有均價資料，退回原本的成本金額）
+  const stockCost = (avg > 0 && qty > 0) ? avg * qty : (x.cost || 0);
+  x.stockCost = stockCost;
+  // 市值若有現價就用現價×數量，否則保留原市值
+  if (x.price > 0 && qty > 0) {
+    x.marketValue = x.price * qty;
+  }
+  x.pl = (x.marketValue || 0) - stockCost;
+  if (stockCost > 0) {
+    const r = (x.pl / stockCost) * 100;
+    x.rate = (r > 0 ? '+' : '') + r.toFixed(2) + '%';
+  } else {
+    x.rate = '—';
+  }
+}
+
+// ---------- 自動備份（匯入前呼叫，存在 localStorage 的環狀緩衝，最多保留 5 份） ----------
+const AUTO_BACKUP_KEY = 'stockTracker.autobackups';
+const AUTO_BACKUP_MAX = 5;
+
+function getAutoBackups() {
+  try {
+    const raw = localStorage.getItem(AUTO_BACKUP_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }
+}
+
+function autoBackup(label) {
+  if (!State.data) return;
+  try {
+    const backups = getAutoBackups();
+    backups.unshift({
+      time: new Date().toISOString(),
+      label: label || '匯入前',
+      accounts: State.data.accounts.length,
+      data: JSON.stringify(State.data)   // 存成字串，省空間
+    });
+    // 只保留最近 N 份
+    while (backups.length > AUTO_BACKUP_MAX) backups.pop();
+    localStorage.setItem(AUTO_BACKUP_KEY, JSON.stringify(backups));
+  } catch (e) {
+    // localStorage 滿了就把最舊的丟掉再試一次
+    try {
+      const backups = getAutoBackups();
+      backups.pop();
+      localStorage.setItem(AUTO_BACKUP_KEY, JSON.stringify(backups));
+    } catch (e2) {
+      console.warn('自動備份失敗：', e2);
+    }
+  }
+}
+
+async function showAutoBackupsDialog() {
+  const backups = getAutoBackups();
+  if (!backups.length) {
+    return toast('目前沒有任何自動備份', 'err');
+  }
+
+  const rows = backups.map((b, i) => {
+    const t = new Date(b.time);
+    const timeStr = t.toLocaleString('zh-TW', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    });
+    return `
+      <tr>
+        <td>${timeStr}</td>
+        <td>${b.label || '—'}</td>
+        <td>${b.accounts} 個帳戶</td>
+        <td><button class="btn-mini" data-restore-idx="${i}">還原此份</button></td>
+      </tr>
+    `;
+  }).join('');
+
+  await showModal({
+    title: '還原自動備份',
+    html: `
+      <div style="min-width:520px;max-width:640px">
+        <p class="hint" style="margin-top:0">系統會在每次匯入前自動備份（最多保留 ${AUTO_BACKUP_MAX} 份）。選一份還原會<b>取代目前所有資料</b>。</p>
+        <table class="alert-table">
+          <thead><tr><th>備份時間</th><th>說明</th><th>內容</th><th>操作</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `,
+    confirmText: '關閉',
+    onConfirm: () => null
+  });
+
+  // modal 渲染後綁還原按鈕
+  setTimeout(() => {
+    document.querySelectorAll('button[data-restore-idx]').forEach(btn => {
+      btn.onclick = async () => {
+        const idx = parseInt(btn.getAttribute('data-restore-idx'), 10);
+        const backups = getAutoBackups();
+        const b = backups[idx];
+        if (!b) return;
+        const ok = await confirmDialog(
+          '確認還原',
+          `將把目前所有資料取代為這份備份（${b.accounts} 個帳戶，${new Date(b.time).toLocaleString('zh-TW')}）。<br><br>確定還原？`
+        );
+        if (!ok) return;
+        try {
+          const data = JSON.parse(b.data);
+          // 還原前先備份「現在」的狀態，以免還原錯了想回來
+          autoBackup('還原前');
+          State.data = data;
+          State.currentAccountId = data.currentAccountId || (data.accounts[0]?.id || null);
+          save();
+          refreshAccountSelector();
+          renderAll();
+          // 關閉 modal
+          const modalRoot = document.getElementById('modalRoot');
+          if (modalRoot) modalRoot.innerHTML = '';
+          toast('已還原備份', 'ok');
+        } catch (e) {
+          toast('還原失敗：' + e.message, 'err');
+        }
+      };
+    });
+  }, 0);
 }
 
 // ---------- 工具 ----------
@@ -361,6 +497,7 @@ function logImport(msg, kind = '') {
 async function importUnrealized(file) {
   const acc = getCurrentAccount();
   if (!acc) return toast('請先選擇帳戶', 'err');
+  autoBackup('匯入未實現損益前');
   try {
     const wb = await readFile(file);
     const result = Parsers.parseUnrealized(wb);
@@ -372,8 +509,11 @@ async function importUnrealized(file) {
     acc.unrealized = items;
     acc.unrealizedSnapshotDate = date;
 
+    // 一律用「平均單價×數量」重算損益與報酬率（融資成本金額是自備款，不能用）
+    for (const x of items) recalcUnrealizedItem(x);
+
     const totalMarket = items.reduce((s, x) => s + x.marketValue, 0);
-    const totalCost = items.reduce((s, x) => s + x.cost, 0);
+    const totalCost = items.reduce((s, x) => s + (x.stockCost || 0), 0);
     const totalPL = items.reduce((s, x) => s + x.pl, 0);
 
     // 加入快照（同日覆蓋）
@@ -395,6 +535,7 @@ async function importUnrealized(file) {
 async function importTrades(file) {
   const acc = getCurrentAccount();
   if (!acc) return toast('請先選擇帳戶', 'err');
+  autoBackup('匯入投資明細前');
   const append = true;  // 一律追加，不再取代（避免誤刪舊資料）
   try {
     const wb = await readFile(file);
@@ -433,6 +574,7 @@ async function importTrades(file) {
 async function importRealized(file) {
   const acc = getCurrentAccount();
   if (!acc) return toast('請先選擇帳戶', 'err');
+  autoBackup('匯入已實現損益前');
   const append = true;  // 一律追加，不再取代（避免誤刪舊資料）
   try {
     const wb = await readFile(file);
@@ -717,7 +859,7 @@ function renderPeriodInfo() {
 // ---------- 帳戶聚合 ----------
 function aggregateAccount(acc) {
   const totalMarket = acc.unrealized.reduce((s,x) => s+x.marketValue, 0);
-  const totalCost   = acc.unrealized.reduce((s,x) => s+x.cost, 0);
+  const totalCost   = acc.unrealized.reduce((s,x) => s + (x.stockCost != null ? x.stockCost : (x.cost||0)), 0);
   const unrealizedPL= acc.unrealized.reduce((s,x) => s+x.pl, 0);
   const totalInterest = acc.realized.reduce((s,r) => s+(r.interest||0), 0);
   const totalShortFee = acc.realized.reduce((s,r) => s+(r.shortFee||0), 0);
@@ -2532,12 +2674,7 @@ async function refreshPrices(silent = false) {
       const info = lookupPrice(code);
       if (info && info.price > 0) {
         x.price = info.price;
-        x.marketValue = info.price * (x.qty || 0);
-        x.pl = x.marketValue - (x.cost || 0);
-        if (x.cost > 0) {
-          const r = (x.pl / x.cost) * 100;
-          x.rate = (r > 0 ? '+' : '') + r.toFixed(2) + '%';
-        }
+        recalcUnrealizedItem(x);
         x._priceUpdated = true;
         x._priceUpdatedAt = new Date().toISOString();
         updated++;
@@ -2560,12 +2697,7 @@ async function refreshPrices(silent = false) {
           const info = results[j];
           if (info && info.price > 0) {
             x.price = info.price;
-            x.marketValue = info.price * (x.qty || 0);
-            x.pl = x.marketValue - (x.cost || 0);
-            if (x.cost > 0) {
-              const r = (x.pl / x.cost) * 100;
-              x.rate = (r > 0 ? '+' : '') + r.toFixed(2) + '%';
-            }
+            recalcUnrealizedItem(x);
             x._priceUpdated = true;
             x._priceUpdatedAt = new Date().toISOString();
             updated++;
@@ -2655,13 +2787,8 @@ async function editUnrealizedDialog(item) {
   });
   if (!result) return;
   Object.assign(item, result);
-  // 重算報酬率
-  if (item.cost > 0) {
-    const r = (item.pl / item.cost) * 100;
-    item.rate = (r > 0 ? '+' : '') + r.toFixed(2) + '%';
-  } else {
-    item.rate = '—';
-  }
+  // 統一用「平均單價×數量」重算損益與報酬率
+  recalcUnrealizedItem(item);
   save();
   renderAll();
   toast('已更新', 'ok');
@@ -2696,8 +2823,12 @@ function renderUnrealized() {
     snapBody.innerHTML = '<tr><td colspan="5" class="empty-state">無快照</td></tr>';
     return;
   }
+  // 確保每筆都已用「平均單價×數量」重算（涵蓋舊備份資料）
+  for (const x of acc.unrealized) {
+    if (x.stockCost == null) recalcUnrealizedItem(x);
+  }
   let M=0, C=0, P=0;
-  for (const x of acc.unrealized) { M+=x.marketValue; C+=x.cost; P+=x.pl; }
+  for (const x of acc.unrealized) { M+=x.marketValue; C+=(x.stockCost!=null?x.stockCost:(x.cost||0)); P+=x.pl; }
   setVal('urMarket', M);
   setVal('urCost', C);
   setVal('urPL', P, true);
@@ -2718,13 +2849,13 @@ function renderUnrealized() {
       <td>${fmt(x.qty)}</td>
       <td class="${priceClass}">${fmt(x.price, {decimals:2})}</td>
       <td class="${priceClass}">${fmt(x.marketValue)}</td>
-      <td>${fmt(x.cost)}</td>
+      <td title="股票全額成本（平均單價×數量）">${fmt(x.stockCost != null ? x.stockCost : x.cost)}</td>
       <td>${fmt(x.avgCost, {decimals:4})}</td>
       <td>${fmt(x.fee)}</td>
       <td>${fmt(x.tax)}</td>
       <td>${fmt(x.interest)}</td>
       <td class="${plClass(x.pl)} ${priceClass}">${fmt(x.pl, {sign:true})}</td>
-      <td class="${plClass(x.pl)} ${priceClass}">${x.rate || (x.cost ? fmtPct(x.pl/x.cost*100) : '—')}</td>
+      <td class="${plClass(x.pl)} ${priceClass}">${x.rate || '—'}</td>
       <td>
         <button class="btn-mini" data-act="edit-ur" data-idx="${idx}" style="padding:2px 6px;font-size:11px" title="編輯">✏️</button>
         <button class="btn-mini danger" data-act="del-ur" data-idx="${idx}" style="padding:2px 6px;font-size:11px" title="刪除">🗑️</button>
@@ -3151,7 +3282,7 @@ function buildStockAnalysis(acc) {
     if (!x.code) continue;
     const s = ensure(x.code, x.name);
     s.marketValue += (x.marketValue || 0);
-    s.cost += (x.cost || 0);
+    s.cost += (x.stockCost != null ? x.stockCost : (x.cost || 0));
     s.unrealizedPL += (x.pl || 0);
     // 如果交易明細沒匯入或不完整，用未實現的數量當持股數
     if (s.currentQty <= 0 && (x.qty || 0) > 0) {
@@ -4344,6 +4475,7 @@ async function editDividendEntry(entry) {
 async function importDividendFile(file) {
   const acc = getCurrentAccount();
   if (!acc) return toast('請先選擇帳戶', 'err');
+  autoBackup('匯入股利前');
 
   let result;
   try {
@@ -5028,6 +5160,7 @@ function bindEvents() {
     const f = e.target.files[0]; if (f) restoreBackup(f);
     e.target.value = '';
   });
+  bindClick('btnAutoBackups', showAutoBackupsDialog);
 
   // 上傳
   bindUpload('upUnrealized', importUnrealized);
