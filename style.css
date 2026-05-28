@@ -618,18 +618,29 @@ section .data-table:not(.table-scroll *) {
   padding: 22px;
   min-width: 340px;
   max-width: 90vw;
+  max-height: 88vh;
   box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
 }
 .modal h3 {
   margin: 0 0 14px;
   color: var(--text);
   font-size: 16px;
+  flex: 0 0 auto;
+}
+.modal-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: auto;
+  min-height: 0;
 }
 .modal-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
   margin-top: 18px;
+  flex: 0 0 auto;
 }
 .modal input[type="text"] { width: 100%; }
 
