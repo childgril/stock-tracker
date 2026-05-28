@@ -395,26 +395,21 @@ async function importUnrealized(file) {
 async function importTrades(file) {
   const acc = getCurrentAccount();
   if (!acc) return toast('請先選擇帳戶', 'err');
-  const append = document.getElementById('tradesAppend').checked;
+  const append = true;  // 一律追加，不再取代（避免誤刪舊資料）
   try {
     const wb = await readFile(file);
     const result = Parsers.parseTrades(wb);
     const items = result.items;
     const broker = result.broker;
 
-    if (append) {
-      // 用「日期+代號+買賣+數量+價金」當鍵去重
-      const seen = new Set(acc.trades.map(t => `${t.date}|${t.code}|${t.action}|${t.qty}|${t.amount}|${t.price}`));
-      let added = 0;
-      for (const t of items) {
-        const k = `${t.date}|${t.code}|${t.action}|${t.qty}|${t.amount}|${t.price}`;
-        if (!seen.has(k)) { acc.trades.push(t); seen.add(k); added++; }
-      }
-      logImport(`✓ 投資明細追加成功（${brokerName(broker)}）：本檔 ${items.length} 筆，新增 ${added} 筆（去重 ${items.length - added} 筆）`, 'ok');
-    } else {
-      acc.trades = items;
-      logImport(`✓ 投資明細匯入成功（${brokerName(broker)}，取代）：${items.length} 筆`, 'ok');
+    // 用「日期+代號+買賣+數量+價金」當鍵去重
+    const seen = new Set(acc.trades.map(t => `${t.date}|${t.code}|${t.action}|${t.qty}|${t.amount}|${t.price}`));
+    let added = 0;
+    for (const t of items) {
+      const k = `${t.date}|${t.code}|${t.action}|${t.qty}|${t.amount}|${t.price}`;
+      if (!seen.has(k)) { acc.trades.push(t); seen.add(k); added++; }
     }
+    logImport(`✓ 投資明細追加成功（${brokerName(broker)}）：本檔 ${items.length} 筆，新增 ${added} 筆（去重 ${items.length - added} 筆）`, 'ok');
 
     // 排序
     acc.trades.sort((a, b) => a.date.localeCompare(b.date));
@@ -438,27 +433,21 @@ async function importTrades(file) {
 async function importRealized(file) {
   const acc = getCurrentAccount();
   if (!acc) return toast('請先選擇帳戶', 'err');
-  const append = document.getElementById('realizedAppend').checked;
+  const append = true;  // 一律追加，不再取代（避免誤刪舊資料）
   try {
     const wb = await readFile(file);
     const result = Parsers.parseRealized(wb);
     const items = result.items;
     const broker = result.broker;
 
-    let merged;
-    if (append) {
-      const seen = new Set(acc.realized.map(r => realizedKey(r)));
-      merged = [...acc.realized];
-      let added = 0;
-      for (const r of items) {
-        const k = realizedKey(r);
-        if (!seen.has(k)) { merged.push(r); seen.add(k); added++; }
-      }
-      logImport(`✓ 已實現損益追加成功（${brokerName(broker)}）：本檔 ${items.length} 筆，新增 ${added} 筆`, 'ok');
-    } else {
-      merged = items;
-      logImport(`✓ 已實現損益匯入成功（${brokerName(broker)}，取代）：${items.length} 筆`, 'ok');
+    const seen = new Set(acc.realized.map(r => realizedKey(r)));
+    let merged = [...acc.realized];
+    let added = 0;
+    for (const r of items) {
+      const k = realizedKey(r);
+      if (!seen.has(k)) { merged.push(r); seen.add(k); added++; }
     }
+    logImport(`✓ 已實現損益追加成功（${brokerName(broker)}）：本檔 ${items.length} 筆，新增 ${added} 筆（去重 ${items.length - added} 筆）`, 'ok');
 
     // 還原以前儲存的調整金額與備註
     let restored = 0;

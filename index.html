@@ -6,7 +6,7 @@
 <title>股票損益追蹤系統</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<link rel="stylesheet" href="style.css?v=20260511a">
+<link rel="stylesheet" href="style.css?v=20260528a">
 </head>
 <body>
 
@@ -507,7 +507,9 @@
         <span>點此或拖曳 .xlsx / .csv 檔</span>
         <input type="file" id="upTrades" accept=".xlsx,.xls,.csv" hidden>
       </label>
-      <label><input type="checkbox" id="tradesAppend"> 追加（不取代既有資料）</label>
+      <label style="color:var(--success);font-weight:600;display:block;margin-top:8px">
+        ✅ 一律追加，不會刪除舊資料（自動去除重複）
+      </label>
     </div>
 
     <div class="import-card">
@@ -517,7 +519,9 @@
         <span>點此或拖曳 .xlsx / .csv 檔</span>
         <input type="file" id="upRealized" accept=".xlsx,.xls,.csv" hidden>
       </label>
-      <label><input type="checkbox" id="realizedAppend"> 追加（不取代既有資料）</label>
+      <label style="color:var(--success);font-weight:600;display:block;margin-top:8px">
+        ✅ 一律追加，不會刪除舊資料（自動去除重複）
+      </label>
     </div>
 
     <div class="import-card">
@@ -558,7 +562,7 @@
 <div id="toast"></div>
 <div id="modalRoot"></div>
 
-<script src="parsers.js?v=20260511a"></script>
-<script src="app.js?v=20260511a"></script>
+<script src="parsers.js?v=20260528a"></script>
+<script src="app.js?v=20260528a"></script>
 </body>
 </html>
