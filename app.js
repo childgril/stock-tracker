@@ -96,10 +96,8 @@ function recalcUnrealizedItem(x) {
   if (!x) return;
   const qty = x.qty || 0;
   const avg = x.avgCost || 0;
-  // 股票全額成本（若沒有均價資料，退回原本的成本金額）
   const stockCost = (avg > 0 && qty > 0) ? avg * qty : (x.cost || 0);
   x.stockCost = stockCost;
-  // 市值若有現價就用現價×數量，否則保留原市值
   if (x.price > 0 && qty > 0) {
     x.marketValue = x.price * qty;
   }
@@ -133,13 +131,11 @@ function autoBackup(label) {
       time: new Date().toISOString(),
       label: label || '匯入前',
       accounts: State.data.accounts.length,
-      data: JSON.stringify(State.data)   // 存成字串，省空間
+      data: JSON.stringify(State.data)
     });
-    // 只保留最近 N 份
     while (backups.length > AUTO_BACKUP_MAX) backups.pop();
     localStorage.setItem(AUTO_BACKUP_KEY, JSON.stringify(backups));
   } catch (e) {
-    // localStorage 滿了就把最舊的丟掉再試一次
     try {
       const backups = getAutoBackups();
       backups.pop();
@@ -155,7 +151,6 @@ async function showAutoBackupsDialog() {
   if (!backups.length) {
     return toast('目前沒有任何自動備份', 'err');
   }
-
   const rows = backups.map((b, i) => {
     const t = new Date(b.time);
     const timeStr = t.toLocaleString('zh-TW', {
@@ -172,7 +167,7 @@ async function showAutoBackupsDialog() {
     `;
   }).join('');
 
-  await showModal({
+  showModal({
     title: '還原自動備份',
     html: `
       <div style="min-width:520px;max-width:640px">
@@ -187,7 +182,6 @@ async function showAutoBackupsDialog() {
     onConfirm: () => null
   });
 
-  // modal 渲染後綁還原按鈕
   setTimeout(() => {
     document.querySelectorAll('button[data-restore-idx]').forEach(btn => {
       btn.onclick = async () => {
@@ -202,14 +196,12 @@ async function showAutoBackupsDialog() {
         if (!ok) return;
         try {
           const data = JSON.parse(b.data);
-          // 還原前先備份「現在」的狀態，以免還原錯了想回來
           autoBackup('還原前');
           State.data = data;
           State.currentAccountId = data.currentAccountId || (data.accounts[0]?.id || null);
           save();
-          refreshAccountSelector();
+          if (typeof refreshAccountSelector === 'function') refreshAccountSelector();
           renderAll();
-          // 關閉 modal
           const modalRoot = document.getElementById('modalRoot');
           if (modalRoot) modalRoot.innerHTML = '';
           toast('已還原備份', 'ok');
@@ -536,19 +528,35 @@ async function importTrades(file) {
   const acc = getCurrentAccount();
   if (!acc) return toast('請先選擇帳戶', 'err');
   autoBackup('匯入投資明細前');
-  const append = true;  // 一律追加，不再取代（避免誤刪舊資料）
   try {
     const wb = await readFile(file);
     const result = Parsers.parseTrades(wb);
     const items = result.items;
     const broker = result.broker;
 
-    // 用「日期+代號+買賣+數量+價金」當鍵去重
-    const seen = new Set(acc.trades.map(t => `${t.date}|${t.code}|${t.action}|${t.qty}|${t.amount}|${t.price}`));
+    // 一律追加（避免誤刪舊資料）
+    // 去重邏輯修正：同一個券商檔案內可能存在「完全相同的兩筆交易」
+    // （例如同一張單拆分次成交），這時不該去重。做法：
+    //   - 算 acc.trades 內每個 key 已有 N 筆
+    //   - 對 items 逐筆計算累積到第 M 筆同 key
+    //   - 只有 M > N 才視為新增
+    const keyOf = (t) => `${t.date}|${t.code}|${t.action}|${t.qty}|${t.amount}|${t.price}`;
+    const existCount = new Map();
+    for (const t of acc.trades) {
+      const k = keyOf(t);
+      existCount.set(k, (existCount.get(k) || 0) + 1);
+    }
+    const itemSeen = new Map();
     let added = 0;
     for (const t of items) {
-      const k = `${t.date}|${t.code}|${t.action}|${t.qty}|${t.amount}|${t.price}`;
-      if (!seen.has(k)) { acc.trades.push(t); seen.add(k); added++; }
+      const k = keyOf(t);
+      const cur = (itemSeen.get(k) || 0) + 1;
+      itemSeen.set(k, cur);
+      const existN = existCount.get(k) || 0;
+      if (cur > existN) {
+        acc.trades.push(t);
+        added++;
+      }
     }
     logImport(`✓ 投資明細追加成功（${brokerName(broker)}）：本檔 ${items.length} 筆，新增 ${added} 筆（去重 ${items.length - added} 筆）`, 'ok');
 
@@ -575,19 +583,33 @@ async function importRealized(file) {
   const acc = getCurrentAccount();
   if (!acc) return toast('請先選擇帳戶', 'err');
   autoBackup('匯入已實現損益前');
-  const append = true;  // 一律追加，不再取代（避免誤刪舊資料）
   try {
     const wb = await readFile(file);
     const result = Parsers.parseRealized(wb);
     const items = result.items;
     const broker = result.broker;
 
-    const seen = new Set(acc.realized.map(r => realizedKey(r)));
-    let merged = [...acc.realized];
+    // 一律追加（避免誤刪舊資料）
+    // 去重同 trades 邏輯：同一檔內可能存在「完全相同的兩筆已實現」
+    // （兩筆同價同量同日的賣出對到同價同量同日的買進），允許保留
+    const keyOf = (r) => realizedKey(r);
+    const existCount = new Map();
+    for (const r of acc.realized) {
+      const k = keyOf(r);
+      existCount.set(k, (existCount.get(k) || 0) + 1);
+    }
+    const itemSeen = new Map();
+    const merged = [...acc.realized];
     let added = 0;
     for (const r of items) {
-      const k = realizedKey(r);
-      if (!seen.has(k)) { merged.push(r); seen.add(k); added++; }
+      const k = keyOf(r);
+      const cur = (itemSeen.get(k) || 0) + 1;
+      itemSeen.set(k, cur);
+      const existN = existCount.get(k) || 0;
+      if (cur > existN) {
+        merged.push(r);
+        added++;
+      }
     }
     logImport(`✓ 已實現損益追加成功（${brokerName(broker)}）：本檔 ${items.length} 筆，新增 ${added} 筆（去重 ${items.length - added} 筆）`, 'ok');
 
@@ -2855,7 +2877,7 @@ function renderUnrealized() {
       <td>${fmt(x.tax)}</td>
       <td>${fmt(x.interest)}</td>
       <td class="${plClass(x.pl)} ${priceClass}">${fmt(x.pl, {sign:true})}</td>
-      <td class="${plClass(x.pl)} ${priceClass}">${x.rate || '—'}</td>
+      <td class="${plClass(x.pl)} ${priceClass}">${x.rate || (x.cost ? fmtPct(x.pl/x.cost*100) : '—')}</td>
       <td>
         <button class="btn-mini" data-act="edit-ur" data-idx="${idx}" style="padding:2px 6px;font-size:11px" title="編輯">✏️</button>
         <button class="btn-mini danger" data-act="del-ur" data-idx="${idx}" style="padding:2px 6px;font-size:11px" title="刪除">🗑️</button>
