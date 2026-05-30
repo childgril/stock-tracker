@@ -570,7 +570,7 @@ async function importTrades(file) {
     }
 
     save();
-    toast(`投資明細已${append?'追加':'匯入'}`, 'ok');
+    toast('投資明細已追加', 'ok');
     renderAll();
   } catch (e) {
     console.error(e);
@@ -645,7 +645,7 @@ async function importRealized(file) {
     acc.realized = merged;
 
     save();
-    toast(`已實現損益已${append?'追加':'匯入'}`, 'ok');
+    toast('已實現損益已追加', 'ok');
     renderAll();
   } catch (e) {
     console.error(e);
