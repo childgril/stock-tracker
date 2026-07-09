@@ -3257,7 +3257,7 @@ function buildStockAnalysis(acc) {
     return s;
   };
 
-  // 從投資明細統計
+  // 從投資明細統計（僅用來累計買賣次數、金額、平均價；currentQty 由未實現決定）
   for (const t of (acc.trades || [])) {
     if (!t.code) continue;
     const s = ensure(t.code, t.name);
@@ -3268,9 +3268,8 @@ function buildStockAnalysis(acc) {
     if (!s.firstTradeDate || (t.date && t.date < s.firstTradeDate)) s.firstTradeDate = t.date;
     if (!s.lastTradeDate || (t.date && t.date > s.lastTradeDate)) s.lastTradeDate = t.date;
 
-    // 資轉現：不算買賣次數，但會更新持股（融資轉現股，數量不變）
+    // 資轉現：不算買賣次數
     if (t.category === '資轉現' || t.action === '資轉現') {
-      // 不影響 currentQty（融資減一筆、現股加一筆，淨零）
       continue;
     }
 
@@ -3278,12 +3277,10 @@ function buildStockAnalysis(acc) {
       s.buyCount++;
       s.buyAmount += (t.amount || 0);
       s.buyQty += (t.qty || 0);
-      s.currentQty += (t.qty || 0);
     } else if (t.action === '賣') {
       s.sellCount++;
       s.sellAmount += (t.amount || 0);
       s.sellQty += (t.qty || 0);
-      s.currentQty -= (t.qty || 0);
     }
   }
 
@@ -3299,17 +3296,15 @@ function buildStockAnalysis(acc) {
     s.realizedItems.push(r);
   }
 
-  // 從未實現損益統計（持有市值/成本）
+  // 從未實現損益統計（持有股數、市值、成本 —— 券商對帳單的當下狀況為準）
+  // 目前持有股數 = 未實現損益中每筆的股數加總（同一代號可能有現股+融資多筆）
   for (const x of (acc.unrealized || [])) {
     if (!x.code) continue;
     const s = ensure(x.code, x.name);
     s.marketValue += (x.marketValue || 0);
     s.cost += (x.stockCost != null ? x.stockCost : (x.cost || 0));
     s.unrealizedPL += (x.pl || 0);
-    // 如果交易明細沒匯入或不完整，用未實現的數量當持股數
-    if (s.currentQty <= 0 && (x.qty || 0) > 0) {
-      s.currentQty = x.qty;
-    }
+    s.currentQty += (x.qty || 0);
   }
 
   // 計算實際損益和平均報酬率
