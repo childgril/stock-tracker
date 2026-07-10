@@ -1797,41 +1797,52 @@ function renderMonthly() {
 }
 
 // ============================================================
-// 每月交易分析建議（最近 3 個月，每月嚴選 3-5 項觀察）
+// 每月交易分析建議（最近 3 個月，每月嚴選 6-8 項觀察，插在月份比較分析上方）
 // ============================================================
 function renderRecentMonthsInsights(acc) {
-  // 找 / 建立容器
+  // 找 / 建立容器（要插在「月份比較分析」上方）
   let wrap = document.getElementById('monthlyInsights');
   if (!wrap) {
-    const table = document.getElementById('monthlyTable');
-    if (!table) return;
+    const cmpArea = document.getElementById('monthCompareArea');
+    if (!cmpArea) return;
     wrap = document.createElement('div');
     wrap.id = 'monthlyInsights';
-    wrap.style.marginTop = '20px';
-    // 插入到 table 的父容器（.table-scroll）之後
-    const scrollWrap = table.closest('.table-scroll') || table.parentElement;
-    scrollWrap.parentNode.insertBefore(wrap, scrollWrap.nextSibling);
+    wrap.style.marginBottom = '20px';
+    // 往前找「月份比較」的 h3 標題當錨點；找不到就直接插在 cmpArea 之前
+    let anchor = cmpArea;
+    let node = cmpArea.previousElementSibling;
+    while (node) {
+      if (node.tagName === 'H3' && node.textContent && node.textContent.includes('月份比較')) {
+        anchor = node;
+        break;
+      }
+      // 掃過 hint、toolbar 這類輔助元素，找 h3
+      if (node.tagName === 'P' || (node.classList && (node.classList.contains('hint') || node.classList.contains('table-toolbar')))) {
+        anchor = node;
+        node = node.previousElementSibling;
+        continue;
+      }
+      break;
+    }
+    anchor.parentNode.insertBefore(wrap, anchor);
   }
 
   const allMonths = buildMonthlyDataWithDayTrade(acc);
   if (!allMonths.length) { wrap.innerHTML = ''; return; }
 
-  // 取最近 3 個月（allMonths 已從新到舊排序）
   const recent = allMonths.slice(0, 3);
-  // 前一個月（用來比較）
   const byKey = new Map(allMonths.map(m => [m.key, m]));
 
   const cards = recent.map(m => buildMonthInsightCard(m, byKey, allMonths, acc));
   wrap.innerHTML = `
     <h3 style="margin-top:24px">💡 最近 3 個月觀察建議</h3>
-    <p class="hint">系統根據每月交易資料自動生成的重點觀察與提醒（每張卡片 3-5 項）</p>
+    <p class="hint">系統根據每月交易資料自動生成的重點觀察與提醒（每張卡片嚴選 6-8 項）</p>
     <div class="month-insights-grid">${cards.join('')}</div>
   `;
 }
 
 // 產生某月的觀察卡片
 function buildMonthInsightCard(m, byKey, allMonths, acc) {
-  // === 主要指標 ===
   const dayTradePL = m.dayTradePL || 0;
   const feeSum = (m.interest || 0) + (m.shortFee || 0);
   const winCount = m.realizedItems.filter(r => actualPL(r) > 0).length;
@@ -1839,24 +1850,38 @@ function buildMonthInsightCard(m, byKey, allMonths, acc) {
   const totalR = winCount + lossCount;
   const winRate = totalR > 0 ? (winCount / totalR) * 100 : null;
 
-  // 個股損益：以代號分組
+  // 個股損益：以代號分組（顯示時優先用名稱）
   const byCode = new Map();
   for (const r of m.realizedItems) {
-    const cur = byCode.get(r.code) || { code: r.code, name: r.name, pl: 0, count: 0 };
+    const cur = byCode.get(r.code) || { code: r.code, name: r.name || '', pl: 0, count: 0 };
     cur.pl += actualPL(r);
     cur.count++;
+    if (!cur.name && r.name) cur.name = r.name;
     byCode.set(r.code, cur);
   }
   const stocksSorted = [...byCode.values()].sort((a, b) => Math.abs(b.pl) - Math.abs(a.pl));
   const topGain = stocksSorted.find(s => s.pl > 0);
   const topLoss = stocksSorted.find(s => s.pl < 0);
+  // 顯示名稱優先，其次代號
+  const nameOf = (s) => (s && s.name) ? s.name : (s ? s.code : '');
 
-  // 前一個月比較
+  // 前一個月
   const [y, mo] = m.key.split('-').map(Number);
   const prevMonth = (mo === 1) ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`;
   const prev = byKey.get(prevMonth);
 
-  // === 觀察池：先蒐集所有可能的觀察，再嚴選 3-5 項 ===
+  // 平均賺/賠
+  const wins = m.realizedItems.filter(r => actualPL(r) > 0);
+  const losses = m.realizedItems.filter(r => actualPL(r) < 0);
+  const avgWin = wins.length > 0 ? wins.reduce((s, r) => s + actualPL(r), 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? losses.reduce((s, r) => s + actualPL(r), 0) / losses.length : 0;
+
+  // 融資 / 融券別
+  const marginItems = m.realizedItems.filter(r => r.sellCategory === '融資' || r.buyCategory === '融資');
+  const shortItems = m.realizedItems.filter(r => r.sellCategory === '融券' || r.buyCategory === '融券');
+  const marginPL = marginItems.reduce((s, r) => s + actualPL(r), 0);
+  const shortPL = shortItems.reduce((s, r) => s + actualPL(r), 0);
+
   const pool = [];
 
   // 1. 本月表現主軸
@@ -1868,7 +1893,7 @@ function buildMonthInsightCard(m, byKey, allMonths, acc) {
     pool.push({ kind: 'info', priority: 5, text: '本月實際損益打平' });
   }
 
-  // 2. 跟上月比較（趨勢感）
+  // 2. 跟上月比較
   if (prev) {
     const diff = m.actual - prev.actual;
     if (Math.abs(diff) > 0) {
@@ -1882,7 +1907,7 @@ function buildMonthInsightCard(m, byKey, allMonths, acc) {
   }
 
   // 3. 勝率
-  if (winRate != null && totalR >= 3) {  // 至少 3 筆才有意義
+  if (winRate != null && totalR >= 3) {
     if (winRate >= 65) {
       pool.push({ kind: 'good', priority: 7, text: `勝率 ${winRate.toFixed(0)}%（${winCount} 勝 / ${lossCount} 敗），表現穩定` });
     } else if (winRate <= 35) {
@@ -1896,7 +1921,7 @@ function buildMonthInsightCard(m, byKey, allMonths, acc) {
   if (topGain) {
     pool.push({
       kind: 'good', priority: 6,
-      text: `獲利主力：<strong>${topGain.code}</strong>（${fmt(topGain.pl, { sign: true })}${topGain.count > 1 ? `，${topGain.count} 筆` : ''}）`
+      text: `獲利主力：<strong>${nameOf(topGain)}</strong>（${fmt(topGain.pl, { sign: true })}${topGain.count > 1 ? `，${topGain.count} 筆` : ''}）`
     });
   }
 
@@ -1904,22 +1929,22 @@ function buildMonthInsightCard(m, byKey, allMonths, acc) {
   if (topLoss) {
     pool.push({
       kind: 'bad', priority: 8,
-      text: `虧損最多：<strong>${topLoss.code}</strong>（${fmt(topLoss.pl, { sign: true })}${topLoss.count > 1 ? `，${topLoss.count} 筆` : ''}）`
+      text: `虧損最多：<strong>${nameOf(topLoss)}</strong>（${fmt(topLoss.pl, { sign: true })}${topLoss.count > 1 ? `，${topLoss.count} 筆` : ''}）`
     });
   }
 
-  // 6. 集中度警示：單一標的虧損佔比高
+  // 6. 集中度警示
   if (topLoss && m.actual < 0) {
     const ratio = Math.abs(topLoss.pl / m.actual) * 100;
     if (ratio >= 70 && Math.abs(topLoss.pl) >= 5000) {
       pool.push({
         kind: 'warn', priority: 9,
-        text: `本月 <strong>${topLoss.code}</strong> 一檔虧損就佔 ${ratio.toFixed(0)}%，過度集中`
+        text: `本月 <strong>${nameOf(topLoss)}</strong> 一檔虧損就佔 ${ratio.toFixed(0)}%，過度集中`
       });
     }
   }
 
-  // 7. 融資費用佔比高
+  // 7. 融資費用侵蝕
   if (feeSum > 0 && m.realizedPL !== 0) {
     const feeRatio = (feeSum / Math.abs(m.realizedPL)) * 100;
     if (feeRatio >= 30) {
@@ -1927,6 +1952,8 @@ function buildMonthInsightCard(m, byKey, allMonths, acc) {
         kind: 'warn', priority: 7,
         text: `融資利息+融券手續費 ${fmt(feeSum)}（吃掉毛損益 ${feeRatio.toFixed(0)}%），成本偏高`
       });
+    } else if (feeSum >= 3000) {
+      pool.push({ kind: 'info', priority: 3, text: `融資利息+融券手續費 ${fmt(feeSum)}` });
     }
   }
 
@@ -1944,9 +1971,13 @@ function buildMonthInsightCard(m, byKey, allMonths, acc) {
     }
   }
 
-  // 9. 交易頻率極端
+  // 9. 交易頻率
   if (m.tradeCount >= 40) {
     pool.push({ kind: 'warn', priority: 6, text: `本月成交 <strong>${m.tradeCount}</strong> 筆，頻率偏高，注意手續費侵蝕` });
+  } else if (m.tradeCount >= 20) {
+    pool.push({ kind: 'info', priority: 3, text: `本月成交 ${m.tradeCount} 筆` });
+  } else if (m.tradeCount > 0 && m.tradeCount <= 3) {
+    pool.push({ kind: 'info', priority: 2, text: `本月僅 ${m.tradeCount} 筆交易，屬於觀察期` });
   }
 
   // 10. 融資回補
@@ -1959,14 +1990,76 @@ function buildMonthInsightCard(m, byKey, allMonths, acc) {
     pool.push({ kind: 'good', priority: 4, text: `本月收到現金股利 ${fmt(m.dividendCash)}` });
   }
 
-  // === 嚴選：優先取 priority 高的，最多 5 項，最少 3 項（不夠就補中性）
+  // 12. 平均賺賠比（避免小賺大賠）
+  if (winCount >= 2 && lossCount >= 2 && avgLoss !== 0) {
+    const ratio = Math.abs(avgWin / avgLoss);
+    if (ratio < 0.7) {
+      pool.push({
+        kind: 'warn', priority: 7,
+        text: `平均賺 ${fmt(avgWin)} vs 平均賠 ${fmt(avgLoss)}，屬「小賺大賠」型態`
+      });
+    } else if (ratio >= 2) {
+      pool.push({
+        kind: 'good', priority: 6,
+        text: `平均賺 ${fmt(avgWin)} vs 平均賠 ${fmt(avgLoss)}，屬「大賺小賠」型態`
+      });
+    }
+  }
+
+  // 13. 融資 vs 融券貢獻
+  if (marginItems.length >= 2 && Math.abs(marginPL) >= 5000) {
+    pool.push({
+      kind: marginPL > 0 ? 'good' : 'bad', priority: 5,
+      text: `融資部位 ${marginItems.length} 筆，損益 ${fmt(marginPL, { sign: true })}`
+    });
+  }
+  if (shortItems.length >= 2 && Math.abs(shortPL) >= 5000) {
+    pool.push({
+      kind: shortPL > 0 ? 'good' : 'bad', priority: 5,
+      text: `融券部位 ${shortItems.length} 筆,損益 ${fmt(shortPL, { sign: true })}`
+    });
+  }
+
+  // 14. 成交金額
+  if (m.tradeAmount >= 10000000) {
+    const turnover = (m.tradeAmount / 10000).toFixed(0);
+    pool.push({ kind: 'info', priority: 2, text: `成交金額 ${turnover} 萬，週轉活躍` });
+  }
+
+  // 15. 最大單筆
+  if (m.realizedItems.length >= 1) {
+    const items = m.realizedItems.map(r => ({ code: r.code, name: r.name || '', pl: actualPL(r) }));
+    items.sort((a, b) => Math.abs(b.pl) - Math.abs(a.pl));
+    const biggest = items[0];
+    if (Math.abs(biggest.pl) >= 20000) {
+      const displayName = biggest.name || biggest.code;
+      pool.push({
+        kind: biggest.pl > 0 ? 'good' : 'bad', priority: 5,
+        text: `最大單筆：<strong>${displayName}</strong> ${fmt(biggest.pl, { sign: true })}`
+      });
+    }
+  }
+
+  // 16. 連續 3 個月虧損（提醒暫停）
+  if (m.actual < 0) {
+    const monthsSorted = allMonths.slice().sort((a, b) => a.key.localeCompare(b.key));
+    const idx = monthsSorted.findIndex(x => x.key === m.key);
+    if (idx >= 2) {
+      const p1 = monthsSorted[idx - 1];
+      const p2 = monthsSorted[idx - 2];
+      if (p1.actual < 0 && p2.actual < 0) {
+        pool.push({ kind: 'bad', priority: 9, text: '已連續 3 個月虧損，建議暫停並檢視策略' });
+      }
+    }
+  }
+
+  // 嚴選：最多 8 項，最少 3 項
   pool.sort((a, b) => b.priority - a.priority);
-  let picked = pool.slice(0, 5);
+  let picked = pool.slice(0, 8);
   if (picked.length < 3 && m.realizedItems.length === 0 && m.tradeCount === 0) {
     picked = [{ kind: 'info', priority: 0, text: '本月無交易紀錄' }];
   }
 
-  // === 主要數字（4 格）===
   const indicators = [
     { lbl: '實際損益', val: fmt(m.actual, { sign: true }), cls: plClass(m.actual) },
     { lbl: '已實現筆數', val: totalR, cls: '' },
