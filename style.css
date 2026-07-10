@@ -618,29 +618,18 @@ section .data-table:not(.table-scroll *) {
   padding: 22px;
   min-width: 340px;
   max-width: 90vw;
-  max-height: 88vh;
   box-shadow: var(--shadow-lg);
-  display: flex;
-  flex-direction: column;
 }
 .modal h3 {
   margin: 0 0 14px;
   color: var(--text);
   font-size: 16px;
-  flex: 0 0 auto;
-}
-.modal-body {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  overflow-x: auto;
-  min-height: 0;
 }
 .modal-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
   margin-top: 18px;
-  flex: 0 0 auto;
 }
 .modal input[type="text"] { width: 100%; }
 
@@ -680,7 +669,7 @@ section .data-table:not(.table-scroll *) {
   margin-left: auto;
 }
 .price-updated-cell {
-  background: rgba(34, 197, 94, 0.18) !important;
+  background: rgba(37, 99, 235, 0.06) !important;
 }
 .price-failed-tag {
   font-size: 10px;
@@ -1202,6 +1191,73 @@ section .data-table:not(.table-scroll *) {
 .acc-analysis-card .insight-list li.warn::before { content: '⚠️'; }
 .acc-analysis-card .insight-list li.bad::before { content: '🔻'; }
 .acc-analysis-card .insight-list li.good::before { content: '✅'; }
+
+/* ============ 每月觀察卡（帳戶明細頁，共用 acc-analysis-card 樣式） ============ */
+.month-insights-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+  margin-top: 8px;
+}
+.month-insight-card {
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+}
+.month-insight-card h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--text);
+}
+.month-insight-card .indicators {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.month-insight-card .ind {
+  background: var(--surface-2);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.month-insight-card .ind .lbl {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.month-insight-card .ind .val {
+  font-weight: 600;
+  font-size: 13px;
+}
+.month-insight-card .ind .val.pos { color: var(--success); }
+.month-insight-card .ind .val.neg { color: var(--danger); }
+.month-insight-card .insight-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.month-insight-card .insight-list li {
+  padding: 5px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  border-bottom: 1px dashed var(--border-light);
+}
+.month-insight-card .insight-list li:last-child { border-bottom: none; }
+.month-insight-card .insight-list li.warn { color: var(--warning); }
+.month-insight-card .insight-list li.bad { color: var(--danger); }
+.month-insight-card .insight-list li.good { color: var(--success); }
+.month-insight-card .insight-list li::before {
+  display: inline-block;
+  margin-right: 6px;
+  width: 14px;
+}
+.month-insight-card .insight-list li.info::before { content: '💡'; }
+.month-insight-card .insight-list li.warn::before { content: '⚠️'; }
+.month-insight-card .insight-list li.bad::before { content: '🔻'; }
+.month-insight-card .insight-list li.good::before { content: '✅'; }
 
 /* ============ 調整金額按鈕 ============ */
 .adjust-btn {

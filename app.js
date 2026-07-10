@@ -1791,6 +1791,205 @@ function renderMonthly() {
       renderMonthly();
     };
   });
+
+  // 每月建議（最近 3 個月，緊接在表格下方）
+  renderRecentMonthsInsights(acc);
+}
+
+// ============================================================
+// 每月交易分析建議（最近 3 個月，每月嚴選 3-5 項觀察）
+// ============================================================
+function renderRecentMonthsInsights(acc) {
+  // 找 / 建立容器
+  let wrap = document.getElementById('monthlyInsights');
+  if (!wrap) {
+    const table = document.getElementById('monthlyTable');
+    if (!table) return;
+    wrap = document.createElement('div');
+    wrap.id = 'monthlyInsights';
+    wrap.style.marginTop = '20px';
+    // 插入到 table 的父容器（.table-scroll）之後
+    const scrollWrap = table.closest('.table-scroll') || table.parentElement;
+    scrollWrap.parentNode.insertBefore(wrap, scrollWrap.nextSibling);
+  }
+
+  const allMonths = buildMonthlyDataWithDayTrade(acc);
+  if (!allMonths.length) { wrap.innerHTML = ''; return; }
+
+  // 取最近 3 個月（allMonths 已從新到舊排序）
+  const recent = allMonths.slice(0, 3);
+  // 前一個月（用來比較）
+  const byKey = new Map(allMonths.map(m => [m.key, m]));
+
+  const cards = recent.map(m => buildMonthInsightCard(m, byKey, allMonths, acc));
+  wrap.innerHTML = `
+    <h3 style="margin-top:24px">💡 最近 3 個月觀察建議</h3>
+    <p class="hint">系統根據每月交易資料自動生成的重點觀察與提醒（每張卡片 3-5 項）</p>
+    <div class="month-insights-grid">${cards.join('')}</div>
+  `;
+}
+
+// 產生某月的觀察卡片
+function buildMonthInsightCard(m, byKey, allMonths, acc) {
+  // === 主要指標 ===
+  const dayTradePL = m.dayTradePL || 0;
+  const feeSum = (m.interest || 0) + (m.shortFee || 0);
+  const winCount = m.realizedItems.filter(r => actualPL(r) > 0).length;
+  const lossCount = m.realizedItems.filter(r => actualPL(r) < 0).length;
+  const totalR = winCount + lossCount;
+  const winRate = totalR > 0 ? (winCount / totalR) * 100 : null;
+
+  // 個股損益：以代號分組
+  const byCode = new Map();
+  for (const r of m.realizedItems) {
+    const cur = byCode.get(r.code) || { code: r.code, name: r.name, pl: 0, count: 0 };
+    cur.pl += actualPL(r);
+    cur.count++;
+    byCode.set(r.code, cur);
+  }
+  const stocksSorted = [...byCode.values()].sort((a, b) => Math.abs(b.pl) - Math.abs(a.pl));
+  const topGain = stocksSorted.find(s => s.pl > 0);
+  const topLoss = stocksSorted.find(s => s.pl < 0);
+
+  // 前一個月比較
+  const [y, mo] = m.key.split('-').map(Number);
+  const prevMonth = (mo === 1) ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`;
+  const prev = byKey.get(prevMonth);
+
+  // === 觀察池：先蒐集所有可能的觀察，再嚴選 3-5 項 ===
+  const pool = [];
+
+  // 1. 本月表現主軸
+  if (m.actual > 0) {
+    pool.push({ kind: 'good', priority: 10, text: `本月實際損益 <strong>${fmt(m.actual, { sign: true })}</strong>` });
+  } else if (m.actual < 0) {
+    pool.push({ kind: 'bad', priority: 10, text: `本月實際損益 <strong>${fmt(m.actual, { sign: true })}</strong>` });
+  } else {
+    pool.push({ kind: 'info', priority: 5, text: '本月實際損益打平' });
+  }
+
+  // 2. 跟上月比較（趨勢感）
+  if (prev) {
+    const diff = m.actual - prev.actual;
+    if (Math.abs(diff) > 0) {
+      const arrow = diff > 0 ? '↑' : '↓';
+      const kind = diff > 0 ? 'good' : 'warn';
+      pool.push({
+        kind, priority: 8,
+        text: `比上月 ${arrow} <strong>${fmt(diff, { sign: true })}</strong>（上月 ${fmt(prev.actual, { sign: true })}）`
+      });
+    }
+  }
+
+  // 3. 勝率
+  if (winRate != null && totalR >= 3) {  // 至少 3 筆才有意義
+    if (winRate >= 65) {
+      pool.push({ kind: 'good', priority: 7, text: `勝率 ${winRate.toFixed(0)}%（${winCount} 勝 / ${lossCount} 敗），表現穩定` });
+    } else if (winRate <= 35) {
+      pool.push({ kind: 'bad', priority: 9, text: `勝率僅 ${winRate.toFixed(0)}%（${winCount} 勝 / ${lossCount} 敗），需檢視選股邏輯` });
+    } else {
+      pool.push({ kind: 'info', priority: 4, text: `勝率 ${winRate.toFixed(0)}%（${winCount} 勝 / ${lossCount} 敗）` });
+    }
+  }
+
+  // 4. 獲利主力
+  if (topGain) {
+    pool.push({
+      kind: 'good', priority: 6,
+      text: `獲利主力：<strong>${topGain.code}</strong>（${fmt(topGain.pl, { sign: true })}${topGain.count > 1 ? `，${topGain.count} 筆` : ''}）`
+    });
+  }
+
+  // 5. 虧損最多
+  if (topLoss) {
+    pool.push({
+      kind: 'bad', priority: 8,
+      text: `虧損最多：<strong>${topLoss.code}</strong>（${fmt(topLoss.pl, { sign: true })}${topLoss.count > 1 ? `，${topLoss.count} 筆` : ''}）`
+    });
+  }
+
+  // 6. 集中度警示：單一標的虧損佔比高
+  if (topLoss && m.actual < 0) {
+    const ratio = Math.abs(topLoss.pl / m.actual) * 100;
+    if (ratio >= 70 && Math.abs(topLoss.pl) >= 5000) {
+      pool.push({
+        kind: 'warn', priority: 9,
+        text: `本月 <strong>${topLoss.code}</strong> 一檔虧損就佔 ${ratio.toFixed(0)}%，過度集中`
+      });
+    }
+  }
+
+  // 7. 融資費用佔比高
+  if (feeSum > 0 && m.realizedPL !== 0) {
+    const feeRatio = (feeSum / Math.abs(m.realizedPL)) * 100;
+    if (feeRatio >= 30) {
+      pool.push({
+        kind: 'warn', priority: 7,
+        text: `融資利息+融券手續費 ${fmt(feeSum)}（吃掉毛損益 ${feeRatio.toFixed(0)}%），成本偏高`
+      });
+    }
+  }
+
+  // 8. 當沖表現
+  if (dayTradePL !== 0) {
+    if (dayTradePL > 0) {
+      pool.push({ kind: 'good', priority: 5, text: `當沖 ${fmt(dayTradePL, { sign: true })}，貢獻正報酬` });
+    } else {
+      const impact = m.actual !== 0 ? Math.abs(dayTradePL / m.actual) * 100 : 0;
+      if (impact >= 40) {
+        pool.push({ kind: 'warn', priority: 8, text: `當沖虧損 ${fmt(dayTradePL)}，佔本月損益 ${impact.toFixed(0)}%` });
+      } else {
+        pool.push({ kind: 'info', priority: 3, text: `當沖 ${fmt(dayTradePL, { sign: true })}` });
+      }
+    }
+  }
+
+  // 9. 交易頻率極端
+  if (m.tradeCount >= 40) {
+    pool.push({ kind: 'warn', priority: 6, text: `本月成交 <strong>${m.tradeCount}</strong> 筆，頻率偏高，注意手續費侵蝕` });
+  }
+
+  // 10. 融資回補
+  if (m.marginCall && m.marginCall > 0) {
+    pool.push({ kind: 'warn', priority: 9, text: `本月被追繳融資回補 ${fmt(m.marginCall)}，注意維持率` });
+  }
+
+  // 11. 股利
+  if (m.dividendCash && m.dividendCash > 0) {
+    pool.push({ kind: 'good', priority: 4, text: `本月收到現金股利 ${fmt(m.dividendCash)}` });
+  }
+
+  // === 嚴選：優先取 priority 高的，最多 5 項，最少 3 項（不夠就補中性）
+  pool.sort((a, b) => b.priority - a.priority);
+  let picked = pool.slice(0, 5);
+  if (picked.length < 3 && m.realizedItems.length === 0 && m.tradeCount === 0) {
+    picked = [{ kind: 'info', priority: 0, text: '本月無交易紀錄' }];
+  }
+
+  // === 主要數字（4 格）===
+  const indicators = [
+    { lbl: '實際損益', val: fmt(m.actual, { sign: true }), cls: plClass(m.actual) },
+    { lbl: '已實現筆數', val: totalR, cls: '' },
+    { lbl: '勝率', val: winRate != null ? `${winRate.toFixed(0)}%` : '—', cls: winRate >= 50 ? 'pos' : (winRate < 50 && winRate != null ? 'neg' : '') },
+    { lbl: '成交筆數', val: m.tradeCount, cls: '' },
+  ];
+
+  return `
+    <div class="month-insight-card">
+      <h4>${fmtMonthLabel(m.key)}</h4>
+      <div class="indicators">
+        ${indicators.map(i => `
+          <div class="ind">
+            <div class="lbl">${i.lbl}</div>
+            <div class="val ${i.cls}">${i.val}</div>
+          </div>
+        `).join('')}
+      </div>
+      <ul class="insight-list">
+        ${picked.map(i => `<li class="${i.kind}">${i.text}</li>`).join('')}
+      </ul>
+    </div>
+  `;
 }
 
 function renderMonthDetail(m) {
