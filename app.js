@@ -1402,7 +1402,7 @@ function renderAccount() {
       .forEach(id => setVal(id, '—'));
     status.innerHTML = '<div class="empty-state">尚未選擇帳戶</div>';
     document.querySelector('#monthlyTable tbody').innerHTML =
-      '<tr><td colspan="9" class="empty-state">尚未選擇帳戶</td></tr>';
+      '<tr><td colspan="10" class="empty-state">尚未選擇帳戶</td></tr>';
     return;
   }
   const g = aggregateAccount(acc);
@@ -1798,7 +1798,7 @@ function renderMonthly() {
   const yearSel = document.getElementById('monthlyYear');
   if (!acc) return;
 
-  // 動態改表頭：精簡到 9 欄避免左右橫拉
+  // 動態改表頭：精簡到 10 欄避免左右橫拉
   const thead = document.querySelector('#monthlyTable thead');
   if (thead) {
     thead.innerHTML = `
@@ -1811,6 +1811,7 @@ function renderMonthly() {
         <th>調整</th>
         <th class="hl">實際損益</th>
         <th class="hl">當沖損益</th>
+        <th class="hl">當沖勝率</th>
         <th class="hl">當沖報酬率</th>
       </tr>
     `;
@@ -1829,7 +1830,7 @@ function renderMonthly() {
   const filtered = currentYear ? data.filter(m => m.key.startsWith(currentYear)) : data;
 
   if (!filtered.length) {
-    tb.innerHTML = '<tr><td colspan="9" class="empty-state">尚無資料（請先匯入已實現損益或投資明細）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="10" class="empty-state">尚無資料（請先匯入已實現損益或投資明細）</td></tr>';
     return;
   }
 
@@ -1839,6 +1840,7 @@ function renderMonthly() {
     const [year, month] = m.key.split('-');
     const dt = dtByMonth.get(m.key);
     const feeSum = (m.interest || 0) + (m.shortFee || 0);
+    const winRateCls = dt ? (dt.winRate >= 50 ? 'pos' : (dt.winRate < 50 ? 'neg' : '')) : '';
     rows.push(`
       <tr class="month-row" data-month="${m.key}">
         <td><span class="month-toggle ${expanded?'expanded':''}">▶</span></td>
@@ -1849,11 +1851,12 @@ function renderMonthly() {
         <td class="${plClass(m.adjust)}">${m.adjust?fmt(m.adjust,{sign:true}):'—'}</td>
         <td class="hl ${plClass(m.actual)}"><strong>${fmt(m.actual,{sign:true})}</strong></td>
         <td class="hl ${dt?plClass(dt.netPL):''}">${dt ? fmt(dt.netPL,{sign:true}) : '—'}</td>
+        <td class="hl ${winRateCls}">${dt ? dt.winRate.toFixed(1)+'%' : '—'}</td>
         <td class="hl ${dt?plClass(dt.rate):''}">${dt ? fmtPct(dt.rate) : '—'}</td>
       </tr>
     `);
     if (expanded) {
-      rows.push(`<tr class="month-detail-row"><td colspan="9">${renderMonthDetail(m, dt)}</td></tr>`);
+      rows.push(`<tr class="month-detail-row"><td colspan="10">${renderMonthDetail(m, dt)}</td></tr>`);
     }
   }
   tb.innerHTML = rows.join('');
@@ -2407,7 +2410,6 @@ function renderMonthDetail(m, dt) {
   ];
   if (dt) {
     cells.push({ lbl: '當沖筆數', val: dt.count });
-    cells.push({ lbl: '當沖勝率', val: dt.winRate.toFixed(1) + '%', cls: dt.winRate >= 50 ? 'pos' : 'neg' });
   }
   html.push(`
     <div class="stock-detail-panel" style="border-bottom:1px solid var(--border-light)">
