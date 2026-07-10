@@ -1402,7 +1402,7 @@ function renderAccount() {
       .forEach(id => setVal(id, '—'));
     status.innerHTML = '<div class="empty-state">尚未選擇帳戶</div>';
     document.querySelector('#monthlyTable tbody').innerHTML =
-      '<tr><td colspan="8" class="empty-state">尚未選擇帳戶</td></tr>';
+      '<tr><td colspan="9" class="empty-state">尚未選擇帳戶</td></tr>';
     return;
   }
   const g = aggregateAccount(acc);
@@ -1798,7 +1798,7 @@ function renderMonthly() {
   const yearSel = document.getElementById('monthlyYear');
   if (!acc) return;
 
-  // 動態改表頭：精簡到 8 欄避免左右橫拉，其他資訊放在展開細節區
+  // 動態改表頭：精簡到 9 欄避免左右橫拉
   const thead = document.querySelector('#monthlyTable thead');
   if (thead) {
     thead.innerHTML = `
@@ -1811,6 +1811,7 @@ function renderMonthly() {
         <th>調整</th>
         <th class="hl">實際損益</th>
         <th class="hl">當沖損益</th>
+        <th class="hl">當沖報酬率</th>
       </tr>
     `;
   }
@@ -1828,7 +1829,7 @@ function renderMonthly() {
   const filtered = currentYear ? data.filter(m => m.key.startsWith(currentYear)) : data;
 
   if (!filtered.length) {
-    tb.innerHTML = '<tr><td colspan="8" class="empty-state">尚無資料（請先匯入已實現損益或投資明細）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="9" class="empty-state">尚無資料（請先匯入已實現損益或投資明細）</td></tr>';
     return;
   }
 
@@ -1848,10 +1849,11 @@ function renderMonthly() {
         <td class="${plClass(m.adjust)}">${m.adjust?fmt(m.adjust,{sign:true}):'—'}</td>
         <td class="hl ${plClass(m.actual)}"><strong>${fmt(m.actual,{sign:true})}</strong></td>
         <td class="hl ${dt?plClass(dt.netPL):''}">${dt ? fmt(dt.netPL,{sign:true}) : '—'}</td>
+        <td class="hl ${dt?plClass(dt.rate):''}">${dt ? fmtPct(dt.rate) : '—'}</td>
       </tr>
     `);
     if (expanded) {
-      rows.push(`<tr class="month-detail-row"><td colspan="8">${renderMonthDetail(m, dt)}</td></tr>`);
+      rows.push(`<tr class="month-detail-row"><td colspan="9">${renderMonthDetail(m, dt)}</td></tr>`);
     }
   }
   tb.innerHTML = rows.join('');
@@ -2406,7 +2408,6 @@ function renderMonthDetail(m, dt) {
   if (dt) {
     cells.push({ lbl: '當沖筆數', val: dt.count });
     cells.push({ lbl: '當沖勝率', val: dt.winRate.toFixed(1) + '%', cls: dt.winRate >= 50 ? 'pos' : 'neg' });
-    cells.push({ lbl: '當沖報酬率', val: fmtPct(dt.rate), cls: plClass(dt.rate) });
   }
   html.push(`
     <div class="stock-detail-panel" style="border-bottom:1px solid var(--border-light)">
