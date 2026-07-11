@@ -958,6 +958,32 @@ function setVal(id, val, withClass = false) {
   if (withClass) el.className = 'value ' + plClass(val);
 }
 
+// 給指定卡片的 label 加上小字註解（一次性，避免重複追加）
+// 用法：setCardLabelNote('acUnrealizedPL', '帳上未賣出股票損益')
+function setCardLabelNote(valueId, note) {
+  const el = document.getElementById(valueId);
+  if (!el) return;
+  // 找到同一個卡片內的 label（value 前面最近的兄弟或父的 label 元素）
+  let label = el.previousElementSibling;
+  while (label && !label.classList?.contains('label') && label.tagName !== 'LABEL') {
+    label = label.previousElementSibling;
+  }
+  if (!label) {
+    // 找不到 previous sibling 為 label 時，向上找 parent 內的 label
+    const parent = el.parentElement;
+    if (parent) label = parent.querySelector('.label');
+  }
+  if (!label) return;
+  // 已經加過註解就不重複追加
+  if (label.dataset.noteAdded === '1') return;
+  const span = document.createElement('span');
+  span.className = 'card-label-note';
+  span.textContent = ` (${note})`;
+  span.style.cssText = 'font-size:11px;color:var(--text-muted);font-weight:400;margin-left:2px';
+  label.appendChild(span);
+  label.dataset.noteAdded = '1';
+}
+
 // ---------- 總覽 ----------
 function renderOverview() {
   let M=0, C=0, U=0, R=0, I=0, S=0, LI=0, LB=0, MCR=0, DC=0;
@@ -979,6 +1005,10 @@ function renderOverview() {
   setVal('ovTotalShortFee', S);
   setVal('ovMarginCallRemaining', MCR);
   setVal('ovTotalDividend', DC);
+
+  // 卡片標題加註解
+  setCardLabelNote('ovUnrealizedPL', '帳上未賣出股票損益');
+  setCardLabelNote('ovRealizedPL', '已賣出股票損益');
 
   // 表
   const tb = document.querySelector('#ovAccountTable tbody');
@@ -1416,6 +1446,10 @@ function renderAccount() {
   setVal('acLoanBalance', g.loanRemaining);
   setVal('acMarginCallRemaining', g.mcRemaining);
   setVal('acDividendCash', g.dividendCash);
+
+  // 卡片標題加註解（帳上未賣出/已賣出）
+  setCardLabelNote('acUnrealizedPL', '帳上未賣出股票損益');
+  setCardLabelNote('acRealizedPL', '已賣出股票損益');
 
   const lines = [];
   lines.push(`<p class="hint">未實現損益：<strong>${acc.unrealized.length}</strong> 檔（快照日 ${acc.unrealizedSnapshotDate || '—'}）　|　投資明細：<strong>${acc.trades.length}</strong> 筆　|　已實現損益：<strong>${acc.realized.length}</strong> 筆　|　歷史快照：<strong>${(acc.snapshots||[]).length}</strong> 筆　|　借款：<strong>${(acc.loans||[]).length}</strong> 筆</p>`);
